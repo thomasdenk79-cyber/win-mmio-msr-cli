@@ -74,3 +74,23 @@ Das sind **Zielbefehle**; ein Bridge-EXE liegt aktuell noch nicht vor. Für PL1 
 - Microsoft Driver Security Best Practices: https://learn.microsoft.com/en-us/windows-hardware/drivers/driversecurity/driver-security-dev-best-practices
 
 Das Projekt entfernt oder umgeht keinen thermischen Schutzmechanismus.
+
+## CLI 0.2: Bedienung und Automatisierung
+
+Die CLI validiert alle Schreibparameter vor dem Start der Bridge, beendet eine nicht antwortende Bridge nach `--timeout-ms`, begrenzt Bridge-Ausgaben und unterstützt farbige Terminalansichten (`--color auto|always|never`) sowie maschinenlesbares JSON (`--json`).
+
+```powershell
+# Diagnose und Planung ohne Hardware
+win-mmio-msr-cli status --mock --color always
+win-mmio-msr-cli plan --mock --preset base
+win-mmio-msr-cli plan --mock --preset turbo --allow-sustained-above-base --json
+
+# Livebetrieb erst nach Bridge- und Messvalidierung
+win-mmio-msr-cli status --bridge C:\Tools\rapl-bridge.exe --timeout-ms 10000
+win-mmio-msr-cli apply --bridge C:\Tools\rapl-bridge.exe --preset base --backup C:\Temp\rapl-before.txt --yes
+
+# PowerShell-Vervollständigung
+win-mmio-msr-cli completions powershell > $PROFILE.CurrentUserAllHosts
+```
+
+JSON besitzt `schema_version: 1`, `ok`, `command` und strukturierte Rohwerte/decoded limits. `apply` erstellt ausschließlich neue Backups und führt nach jedem Schreibvorgang einen exakten Readback durch.

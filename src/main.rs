@@ -1,138 +1,237 @@
-use std::{env, path::PathBuf, process::ExitCode};
+mod output;
+
+use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
+use std::{
+    io::{self, IsTerminal, Write},
+    path::PathBuf,
+    process::ExitCode,
+    time::Duration,
+};
 use win_mmio_msr_cli::{
-    apply, build_plan, describe_plan, describe_snapshot, read_snapshot,
+    apply,
     backend::{ExternalBridge, HardwareBackend, MockBackend},
+    build_plan, read_snapshot,
 };
 
-#[derive(Default)]
-struct Options {
-    command: String,
-    pl1: Option<u16>,
-    pl2: Option<u16>,
-    bridge: Option<PathBuf>,
+#[derive(Parser, Debug)]
+#[command(
+    version,
+    about = "Intel RAPL: MSR + MMIO kontrolliert synchronisieren",
+    long_about = "Intel RAPL: Diagnose, Planung und kontrollierte PL1/PL2-Konfiguration.\nLivebetrieb benötigt eine separat validierte Windows-Bridge. --mock arbeitet ohne Hardware."
+)]
+struct Cli {
+    #[arg(
+        long,
+        global = true,
+        value_enum,
+        default_value = "auto",
+        help = "Terminalfarben (JSON bleibt farblos)"
+    )]
+    color: Color,
+    #[arg(long, global = true, help = "Ein JSON-Dokument statt Terminalansicht")]
+    json: bool,
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum Color {
+    Auto,
+    Always,
+    Never,
+}
+
+#[derive(Args, Debug)]
+#[group(required = true, multiple = false)]
+struct BackendChoice {
+    #[arg(long, help = "Simulation ohne Hardwarezugriff")]
     mock: bool,
-    yes: bool,
+    #[arg(
+        long,
+        value_name = "EXE",
+        help = "Expliziter Pfad zur auditierten Windows-Bridge"
+    )]
+    bridge: Option<PathBuf>,
+}
+
+#[derive(Args, Debug)]
+struct Connection {
+    #[command(flatten)]
+    backend: BackendChoice,
+    #[arg(long, default_value_t = 10000, value_parser = clap::value_parser!(u64).range(100..=120000), help = "Timeout je Bridge-Aufruf in Millisekunden")]
+    timeout_ms: u64,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum Preset {
+    Base,
+    Turbo,
+}
+
+#[derive(Args, Debug)]
+struct Limits {
+    #[arg(long, required_unless_present = "preset", conflicts_with = "preset", value_parser = clap::value_parser!(u16).range(5..=157), help = "PL1 in Watt")]
+    pl1: Option<u16>,
+    #[arg(long, required_unless_present = "preset", conflicts_with = "preset", value_parser = clap::value_parser!(u16).range(5..=157), help = "PL2 in Watt, mindestens PL1")]
+    pl2: Option<u16>,
+    #[arg(
+        long,
+        value_enum,
+        help = "base=55/157 W; turbo=157/157 W (Opt-in erforderlich)"
+    )]
+    preset: Option<Preset>,
+    #[arg(long, help = "PL1 über 55 W ausdrücklich zulassen")]
     allow_sustained_above_base: bool,
-    backup: Option<PathBuf>,
 }
-
-fn help() {
-    println!(r#"win-mmio-msr-cli 0.1.0
-
-Usage:
-  win-mmio-msr-cli status --mock
-  win-mmio-msr-cli plan --mock --pl1 55 --pl2 157
-  win-mmio-msr-cli status --bridge C:\Tools\rapl-bridge.exe
-  win-mmio-msr-cli plan --bridge C:\Tools\rapl-bridge.exe --pl1 55 --pl2 157
-  win-mmio-msr-cli apply --bridge C:\Tools\rapl-bridge.exe --pl1 55 --pl2 157 --backup C:\Temp\rapl-before.txt --yes
-
-Commands:
-  status            Read current MSR/MMIO package power limits
-  plan              Show exact read-modify-write values without writing
-  apply             Write, verify, attempt rollback on failure (explicit opt-in)
-  help              This text
-
-Options:
-  --mock                          Simulation; no hardware I/O
-  --bridge PATH                   Explicit path to an audited Windows bridge .exe
-  --pl1 W                         Long-duration PL1 (5..157)
-  --pl2 W                         Short-duration PL2 (PL1..157)
-  --allow-sustained-above-base    Permit PL1 > 55 W, not recommended for this laptop
-  --backup PATH                   Mandatory new backup file for apply
-  --yes                           Mandatory confirmation for apply
-
-NOTES:
-  The bridge is NOT bundled. See docs/BRIDGE_PROTOCOL.md and AGENTS.md.
-  Setting 157 W in RAPL does NOT defeat BIOS/EC/thermal/current limits.
-  Never disable Windows driver signature enforcement or vulnerable-driver blocklist.
-"#);
-}
-
-fn take_value(args: &mut impl Iterator<Item = String>, flag: &str) -> Result<String, String> {
-    args.next().ok_or_else(|| format!("Missing value after {flag}"))
-}
-
-fn parse_args() -> Result<Options, String> {
-    let mut args = env::args().skip(1);
-    let mut opt = Options {
-        command: args.next().unwrap_or_else(|| "help".into()),
-        ..Options::default()
-    };
-    while let Some(token) = args.next() {
-        match token.as_str() {
-            "--pl1" => opt.pl1 = Some(take_value(&mut args, "--pl1")?
-                .parse::<u16>().map_err(|_| "Invalid PL1 watt value")?),
-            "--pl2" => opt.pl2 = Some(take_value(&mut args, "--pl2")?
-                .parse::<u16>().map_err(|_| "Invalid PL2 watt value")?),
-            "--mock" => opt.mock = true,
-            "--bridge" => opt.bridge = Some(PathBuf::from(take_value(&mut args, "--bridge")?)),
-            "--yes" => opt.yes = true,
-            "--allow-sustained-above-base" => opt.allow_sustained_above_base = true,
-            "--backup" => opt.backup = Some(PathBuf::from(take_value(&mut args, "--backup")?)),
-            "--help" | "-h" => opt.command = "help".into(),
-            _ => return Err(format!("Unknown option: {token}")),
+impl Limits {
+    fn values(&self) -> Result<(u16, u16), String> {
+        let pair = match self.preset {
+            Some(Preset::Base) => (55, 157),
+            Some(Preset::Turbo) => (157, 157),
+            None => (
+                self.pl1.ok_or("--pl1 fehlt")?,
+                self.pl2.ok_or("--pl2 fehlt")?,
+            ),
+        };
+        if pair.0 > pair.1 {
+            return Err("PL1 darf PL2 nicht überschreiten".into());
         }
+        if pair.0 > 55 && !self.allow_sustained_above_base {
+            return Err("PL1 > 55 W benötigt --allow-sustained-above-base".into());
+        }
+        Ok(pair)
     }
-    if opt.mock && opt.bridge.is_some() {
-        return Err("Choose --mock OR --bridge, not both".into());
-    }
-    Ok(opt)
 }
 
-fn run(opt: Options) -> Result<(), String> {
-    if opt.command == "help" {
-        help();
-        return Ok(());
-    }
-    let mut backend: Box<dyn HardwareBackend> = match (opt.mock, opt.bridge) {
-        (true, None) => Box::new(MockBackend::default()),
-        (false, Some(path)) => Box::new(ExternalBridge::new(path)?),
-        _ => return Err("Select --mock or an explicit --bridge PATH".into()),
-    };
+#[derive(Subcommand, Debug)]
+enum Commands {
+    /// Aktuelle Register und Limits lesen
+    Status {
+        #[command(flatten)]
+        connection: Connection,
+    },
+    /// Vorher/Nachher vergleichen, ohne Register zu schreiben
+    Plan {
+        #[command(flatten)]
+        connection: Connection,
+        #[command(flatten)]
+        limits: Limits,
+    },
+    /// Backup erstellen, schreiben und Ergebnis zurücklesen
+    Apply {
+        #[command(flatten)]
+        connection: Connection,
+        #[command(flatten)]
+        limits: Limits,
+        #[arg(long, required = true, help = "Schreibvorgang ausdrücklich bestätigen")]
+        yes: bool,
+        #[arg(
+            long,
+            value_name = "NEW_FILE",
+            help = "Neue Backupdatei (wird niemals überschrieben)"
+        )]
+        backup: PathBuf,
+    },
+    /// Shell-Vervollständigung ausgeben (z. B. powershell)
+    Completions { shell: clap_complete::Shell },
+}
 
-    match opt.command.as_str() {
-        "status" => {
-            let before = read_snapshot(backend.as_mut())?;
-            print!("{}", describe_snapshot(&before));
+fn backend(connection: &Connection) -> Result<Box<dyn HardwareBackend>, String> {
+    if connection.backend.mock {
+        return Ok(Box::new(MockBackend::default()));
+    }
+    let path = connection.backend.bridge.clone().ok_or("Bridge fehlt")?;
+    Ok(Box::new(ExternalBridge::with_timeout(
+        path,
+        Duration::from_millis(connection.timeout_ms),
+    )?))
+}
+
+fn execute(cli: &Cli, color: bool) -> Result<String, String> {
+    match &cli.command {
+        Commands::Completions { shell } => {
+            let mut bytes = Vec::new();
+            clap_complete::generate(*shell, &mut Cli::command(), "win-mmio-msr-cli", &mut bytes);
+            let script = String::from_utf8(bytes).map_err(|e| e.to_string())?;
+            if cli.json {
+                return Ok(serde_json::json!({"schema_version":1,"ok":true,"command":"completions","script":script}).to_string());
+            }
+            Ok(script)
         }
-        "plan" | "apply" => {
-            let pl1 = opt.pl1.ok_or("Missing --pl1 W")?;
-            let pl2 = opt.pl2.ok_or("Missing --pl2 W")?;
-            let plan = build_plan(
-                backend.as_mut(), pl1, pl2, opt.allow_sustained_above_base
-            )?;
-            print!("{}", describe_plan(&plan));
-            if opt.command == "apply" {
-                if !opt.yes {
-                    return Err("No writes performed: --yes is required".into());
+        Commands::Status { connection } => {
+            let snapshot = read_snapshot(backend(connection)?.as_mut())?;
+            if cli.json {
+                return Ok(serde_json::json!({"schema_version":1,"ok":true,"command":"status","snapshot":output::snapshot_json(&snapshot)}).to_string());
+            }
+            Ok(output::snapshot(&snapshot, color))
+        }
+        Commands::Plan { connection, limits }
+        | Commands::Apply {
+            connection, limits, ..
+        } => {
+            // Validate all policy arguments before starting any bridge process.
+            let (pl1, pl2) = limits.values()?;
+            let mut device = backend(connection)?;
+            let plan = build_plan(device.as_mut(), pl1, pl2, limits.allow_sustained_above_base)?;
+            if let Commands::Apply { backup, .. } = &cli.command {
+                let after = apply(device.as_mut(), &plan, backup)?;
+                if cli.json {
+                    return Ok(serde_json::json!({"schema_version":1,"ok":true,"command":"apply","backup":backup,"plan":plan,"snapshot":output::snapshot_json(&after)}).to_string());
                 }
-                let backup = opt.backup.ok_or(
-                    "No writes performed: --backup NEW_FILENAME is required"
-                )?;
-                if plan.before.identity.simulated {
-                    println!("SIMULATION ONLY: no physical registers will be written.");
-                } else {
-                    eprintln!(
-                        "WARNING: Writing live CPU power limits. \
-                         Firmware and cooling safety mechanisms remain authoritative."
-                    );
+                Ok(format!(
+                    "{}\n{}\nBackup: {}\n{}",
+                    output::plan(&plan, color),
+                    output::paint("READBACK VERIFIZIERT", "32;1", color),
+                    output::clean(&backup.display().to_string()),
+                    output::snapshot(&after, color)
+                ))
+            } else {
+                if cli.json {
+                    return Ok(serde_json::json!({"schema_version":1,"ok":true,"command":"plan","plan":plan,"snapshot":output::snapshot_json(plan.before())}).to_string());
                 }
-                let after = apply(backend.as_mut(), &plan, &backup)?;
-                println!("Readback verified. Backup: {}", backup.display());
-                print!("{}", describe_snapshot(&after));
+                Ok(output::plan(&plan, color))
             }
         }
-        other => return Err(format!("Unknown command: {other}")),
     }
-    Ok(())
 }
 
 fn main() -> ExitCode {
-    match parse_args().and_then(run) {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(e) => {
-            eprintln!("ERROR: {e}\nRun 'win-mmio-msr-cli help' for usage.");
-            ExitCode::FAILURE
-        }
+    let cli = Cli::parse();
+    let color = !cli.json
+        && match cli.color {
+            Color::Always => true,
+            Color::Never => false,
+            Color::Auto => {
+                io::stdout().is_terminal()
+                    && std::env::var_os("NO_COLOR").is_none()
+                    && std::env::var("TERM").as_deref() != Ok("dumb")
+            }
+        };
+    let (message, code, stderr) = match execute(&cli, color) {
+        Ok(text) => (text, ExitCode::SUCCESS, false),
+        Err(error) if cli.json => (
+            serde_json::json!({"schema_version":1,"ok":false,"error":error}).to_string(),
+            ExitCode::FAILURE,
+            false,
+        ),
+        Err(error) => (
+            format!(
+                "{} {}",
+                output::paint("FEHLER", "31;1", color && io::stderr().is_terminal()),
+                output::clean(&error)
+            ),
+            ExitCode::FAILURE,
+            true,
+        ),
+    };
+    let result = if stderr {
+        writeln!(io::stderr().lock(), "{message}")
+    } else {
+        writeln!(io::stdout().lock(), "{message}")
+    };
+    match result {
+        Ok(()) => code,
+        Err(e) if e.kind() == io::ErrorKind::BrokenPipe => code,
+        Err(_) => ExitCode::FAILURE,
     }
 }

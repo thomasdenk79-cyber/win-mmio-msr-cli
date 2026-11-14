@@ -12,7 +12,7 @@ const PL2_ENABLE: u64 = 1 << 47;
 const LOCK_BIT: u64 = 1 << 63;
 const CHANGE_MASK: u64 = LIMIT_MASK | (LIMIT_MASK << 32) | PL1_ENABLE | PL2_ENABLE;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, serde::Serialize)]
 pub struct Units {
     pub raw: u64,
     pub watts_per_unit: f64,
@@ -44,7 +44,7 @@ impl Units {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, serde::Serialize)]
 pub struct Limit {
     pub watts: f64,
     pub enabled: bool,
@@ -52,7 +52,7 @@ pub struct Limit {
     pub time_window: u8,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, serde::Serialize)]
 pub struct DecodedLimits {
     pub pl1: Limit,
     pub pl2: Limit,
@@ -150,10 +150,7 @@ mod tests {
 
     #[test]
     fn refuses_unrepresentable_number() {
-        assert!(matches!(
-            with_power_limits(0, Units::decode(0), 55, 157),
-            Ok(_)
-        ));
+        assert!(with_power_limits(0, Units::decode(0), 55, 157).is_ok());
         assert!(matches!(
             with_power_limits(0, Units::decode(15), 55, 157),
             Err(RaplError::OutOfRange(_))

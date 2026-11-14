@@ -34,3 +34,27 @@ Falls Featurebranch noch nicht gemergt: feat/rust-rapl-cli auschecken.
 - 157 W dauerhaft ohne thermische Validierung als PL1 erzwingen.
 - Einen CPU-, PCI- oder MMIO-Check mit angenommener Adresse überspringen.
 - Hardware-Fertigstellung melden, solange Bridge, Signierung und reale Tests fehlen.
+
+## Übergabe nach CLI-Review (v0.2)
+
+Die lokale Agentenarbeit beginnt jetzt beim Windows-Hardwareteil. Die CLI ist in `src/main.rs`, `src/output.rs`, `src/backend.rs` und `src/lib.rs` für folgende Punkte gehärtet:
+
+- Clap-Unterbefehle und gegenseitig ausschließende `--mock`/`--bridge`-Auswahl.
+- Presets `base` (55/157 W) und `turbo` (157/157 W) sowie Pflicht-Opt-in für PL1 über 55 W.
+- `--json`, `--color`, `--timeout-ms` und PowerShell-Vervollständigung.
+- Bridge-Prozess mit begrenzten stdout/stderr-Pipes, Timeout, Kill bei Hänger und Prüfung von Protokollfeldern.
+- Rollback liest vor dem Zurückschreiben erneut und überspringt eine Wiederherstellung bei unerwarteten Registeränderungen; danach wird zurückgelesen.
+
+### Lokale Testreihenfolge
+
+```powershell
+cargo test --all-targets
+cargo fmt --all -- --check
+cargo clippy --all-targets -- -D warnings
+cargo build --release
+.\target\release\win-mmio-msr-cli.exe status --mock --color always
+.\target\release\win-mmio-msr-cli.exe plan --mock --preset base --json
+.\target\release\win-mmio-msr-cli.exe apply --mock --preset base --backup "$env:TEMP\rapl-v02.txt" --yes
+```
+
+Danach die Bridge gemäß `docs/BRIDGE_PROTOCOL.md` implementieren: zuerst read-only, Windows x64/MSVC, signierter enger Treiber, PCI-MCHBAR-Basis und 0x59A0/0x59A4 unabhängig verifizieren. Erst wenn `info` `mmio_59a0_64bit_verified=true` melden darf, soll die CLI live schreiben. Für den lokalen Agenten sind echte Messwerte, Signaturstatus und ein `docs/VALIDATION_REPORT.md` verpflichtend.
