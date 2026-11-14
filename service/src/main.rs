@@ -1,7 +1,8 @@
+#![cfg_attr(not(windows), allow(dead_code, unused_imports))]
 use chrono::{SecondsFormat, Utc};
-use std::{env, fs::OpenOptions, io::Write, path::PathBuf, thread, time::Duration};
+use std::{fs::OpenOptions, io::Write, path::PathBuf, time::Duration};
 use win_mmio_msr_cli::{
-    apply, backend::ExternalBridge, build_plan, rapl::power_fields_equal, read_snapshot,
+    apply, backend::ExternalBridge, build_plan, rapl::power_fields_equal,
 };
 
 #[derive(Debug, Clone)]
