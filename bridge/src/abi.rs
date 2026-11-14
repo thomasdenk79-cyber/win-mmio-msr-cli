@@ -146,14 +146,23 @@ impl Info {
     }
 }
 
-/// Explains the Win32 errors that the driver's NTSTATUS codes map to.
+/// Explains the Win32 errors that the driver's NTSTATUS codes map to
+/// (table in `driver/README.md`).
 pub fn describe_win32_error(code: u32) -> String {
     let hint = match code {
         2 | 3 => "the RaplPkg device does not exist (driver not installed or not started)",
-        5 => "access denied (Administrator/SYSTEM required, or a driver gate refused the request)",
-        50 => "not supported by the driver (CPU unsupported or feature gate disabled)",
-        87 => "the driver rejected the request (invalid parameter or write policy violation)",
+        5 => "access denied (run as Administrator or SYSTEM)",
+        50 => {
+            "not supported by the driver (unsupported CPU, MCHBAR unavailable or \
+             build-time gate disabled)"
+        }
+        87 => {
+            "the driver rejected the request (invalid register or value, or write policy \
+             violation)"
+        }
+        1117 => "the CPU or hypervisor refused the register access",
         1237 => "the register changed concurrently (expected value mismatch); re-run plan",
+        1306 => "driver and bridge protocol versions differ; install matching builds",
         _ => return format!("Win32 error {code}"),
     };
     format!("{hint} (Win32 error {code})")
@@ -203,6 +212,99 @@ mod tests {
     fn explains_driver_errors() {
         assert!(describe_win32_error(1237).contains("re-run plan"));
         assert!(describe_win32_error(5).contains("access denied"));
+        assert!(describe_win32_error(1306).contains("protocol versions differ"));
         assert_eq!(describe_win32_error(1), "Win32 error 1");
+    }
+
+    const DRIVER_HEADER: &str = include_str!("../../driver/include/rapl_ioctl.h");
+    const DRIVER_SOURCE: &str = include_str!("../../driver/src/driver.c");
+
+    /// Numeric `#define NAME VALUE` lines and `Name = VALUE` enum entries of the header.
+    fn header_constants() -> std::collections::HashMap<&'static str, u64> {
+        let parse = |text: &str| {
+            let digits = text
+                .trim_end_matches(',')
+                .trim_end_matches(['u', 'U', 'l', 'L']);
+            match digits
+                .strip_prefix("0x")
+                .or_else(|| digits.strip_prefix("0X"))
+            {
+                Some(hex) => u64::from_str_radix(hex, 16).ok(),
+                None => digits.parse().ok(),
+            }
+        };
+        DRIVER_HEADER
+            .lines()
+            .filter_map(|line| {
+                let mut words = line.split_whitespace();
+                let (name, value) = match words.next()? {
+                    "#define" => (words.next()?, words.next()?),
+                    name if name.starts_with("RaplRegister") => (
+                        words.next().filter(|w| *w == "=").map(|_| name)?,
+                        words.next()?,
+                    ),
+                    _ => return None,
+                };
+                Some((name, parse(value)?))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn driver_header_matches_the_rust_contract() {
+        use rapl_core::policy::{MAX_TURBO_WATTS, MIN_WATTS};
+        use rapl_core::rapl::{self, decode_limits, Units};
+
+        let c = header_constants();
+        let get = |name: &str| *c.get(name).unwrap_or_else(|| panic!("{name} missing"));
+        assert_eq!(get("RAPL_PROTOCOL_VERSION"), u64::from(ABI_VERSION));
+        assert_eq!(get("RAPL_DEVICE_TYPE"), u64::from(DEVICE_TYPE));
+        let base = get("RAPL_IOCTL_BASE") as u32;
+        assert_eq!(IOCTL_GET_INFO, ctl_code(base, FILE_READ_ACCESS));
+        assert_eq!(IOCTL_READ_MSR, ctl_code(base + 1, FILE_READ_ACCESS));
+        assert_eq!(IOCTL_READ_MMIO, ctl_code(base + 2, FILE_READ_ACCESS));
+        assert_eq!(IOCTL_WRITE_MSR, ctl_code(base + 3, FILE_WRITE_ACCESS));
+        assert_eq!(IOCTL_WRITE_MMIO, ctl_code(base + 4, FILE_WRITE_ACCESS));
+        for (name, flag) in [
+            ("RAPL_FLAG_MMIO_VERIFIED", FLAG_MMIO_VERIFIED),
+            ("RAPL_FLAG_READ_ONLY", FLAG_READ_ONLY),
+            ("RAPL_FLAG_CPU_SUPPORTED", FLAG_CPU_SUPPORTED),
+            ("RAPL_FLAG_MMIO_READABLE", FLAG_MMIO_READABLE),
+            ("RAPL_VENDOR_INTEL", VENDOR_INTEL),
+            ("RAPL_MSR_POWER_UNIT", rapl::MSR_RAPL_POWER_UNIT),
+            ("RAPL_MSR_PKG_POWER_LIMIT", rapl::MSR_PKG_POWER_LIMIT),
+            (
+                "RAPL_MMIO_PKG_POWER_LIMIT",
+                rapl::MMIO_PKG_POWER_LIMIT_OFFSET,
+            ),
+            ("RAPL_MIN_WATTS", u32::from(MIN_WATTS)),
+            ("RAPL_MAX_TURBO_WATTS", u32::from(MAX_TURBO_WATTS)),
+            ("RaplRegisterUnits", RegisterId::Units as u32),
+            ("RaplRegisterPackageLimit", RegisterId::PackageLimit as u32),
+            (
+                "RaplRegisterMmioPackageLimit",
+                RegisterId::MmioPackageLimit as u32,
+            ),
+        ] {
+            assert_eq!(get(name), u64::from(flag), "{name}");
+        }
+
+        assert_eq!(get("RAPL_POWER_FIELD_MASK"), rapl::POWER_FIELD_MASK);
+        assert_eq!(get("RAPL_LOCK_BIT"), rapl::LOCK_BIT);
+        let (limit, pl1, pl2) = (
+            get("RAPL_LIMIT_MASK"),
+            get("RAPL_PL1_ENABLE"),
+            get("RAPL_PL2_ENABLE"),
+        );
+        assert_eq!(limit | (limit << 32) | pl1 | pl2, rapl::POWER_FIELD_MASK);
+        let units = Units::decode(get("RAPL_POWER_UNIT_MASK"));
+        assert_eq!(units.watts_per_unit, 1.0 / 32768.0);
+        let decoded = decode_limits(pl1 | limit, units);
+        assert!(decoded.pl1.enabled && !decoded.pl2.enabled);
+        assert_eq!(decoded.pl1.watts, limit as f64 * units.watts_per_unit);
+        assert!(decode_limits(pl2, units).pl2.enabled);
+
+        let link = DEVICE_PATH.trim_start_matches(r"\\.\");
+        assert!(DRIVER_SOURCE.contains(&format!(r#"L"\\DosDevices\\{link}""#)));
     }
 }

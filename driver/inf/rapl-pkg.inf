@@ -1,28 +1,45 @@
-; Skeleton INF. The Windows agent must fill the WDK catalog/signature fields.
+;
+; rapl-pkg.inf: primitive (non-PnP) driver package for the RaplPkg control device.
+; Install: pnputil /add-driver rapl-pkg.inf /install ; start: sc.exe start rapl-pkg
+;
+
 [Version]
-Signature="$Windows NT$"
-Class=System
-ClassGuid={36fc9e60-c465-11cf-8056-444553540000}
-Provider=%Provider%
-DriverVer=11/14/2026,0.1.0.0
-CatalogFile=rapl-pkg.cat
+Signature   = "$WINDOWS NT$"
+Class       = System
+ClassGuid   = {4d36e97d-e325-11ce-bfc1-08002be10318}
+Provider    = %ProviderName%
+DriverVer   = 11/14/2026,0.3.0.0
+CatalogFile = rapl-pkg.cat
+PnpLockdown = 1
+
+[DestinationDirs]
+DefaultDestDir = 13
+
+[SourceDisksNames]
+1 = %DiskName%,,,""
+
+[SourceDisksFiles]
+rapl-pkg.sys = 1,,
 
 [DefaultInstall.NTamd64]
-CopyFiles=DriverCopy
+CopyFiles = RaplPkg.CopyFiles
 
 [DefaultInstall.NTamd64.Services]
-AddService=rapl-pkg,0x00000002,ServiceInstall
+AddService = rapl-pkg,,RaplPkg.Service
 
-[DriverCopy]
+[RaplPkg.CopyFiles]
 rapl-pkg.sys
 
-[ServiceInstall]
-DisplayName=%ServiceName%
-ServiceType=1
-StartType=3
-ErrorControl=1
-ServiceBinary=%12%\\rapl-pkg.sys
+[RaplPkg.Service]
+DisplayName   = %ServiceName%
+Description   = %ServiceDescription%
+ServiceType   = 1 ; SERVICE_KERNEL_DRIVER
+StartType     = 3 ; SERVICE_DEMAND_START
+ErrorControl  = 1 ; SERVICE_ERROR_NORMAL
+ServiceBinary = %13%\rapl-pkg.sys
 
 [Strings]
-Provider="win-mmio-msr-cli"
-ServiceName="RAPL Package Access (signed build required)"
+ProviderName       = "win-mmio-msr-cli"
+DiskName           = "RaplPkg installation disk"
+ServiceName        = "RaplPkg RAPL access driver"
+ServiceDescription = "Fixed-register access to the Intel package RAPL power limit (win-mmio-msr-cli)."

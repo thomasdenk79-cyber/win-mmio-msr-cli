@@ -50,3 +50,35 @@ jobs:
             target/x86_64-pc-windows-msvc/release/win-mmio-msr-cli.exe
             target/x86_64-pc-windows-msvc/release/rapl-bridge.exe
             target/x86_64-pc-windows-msvc/release/rapl-watchdog.exe
+  driver-windows:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: microsoft/setup-msbuild@v2
+      - name: Build driver package (default gates, read-only)
+        run: msbuild driver/rapl-pkg.vcxproj -m -nologo -warnaserror -p:Configuration=Release -p:Platform=x64
+      - name: Compile check with every gate enabled (not shipped)
+        run: >-
+          msbuild driver/rapl-pkg.vcxproj -m -nologo -warnaserror
+          -p:Configuration=Release -p:Platform=x64
+          -p:RaplEnableMmioRead=1 -p:RaplMmioLayoutValidated=1 -p:RaplEnableLiveWrites=1
+          -p:OutDir=${{ runner.temp }}\gates\out\ -p:IntDir=${{ runner.temp }}\gates\obj\
+      - name: Code analysis with every gate enabled
+        run: >-
+          msbuild driver/rapl-pkg.vcxproj -m -nologo -warnaserror
+          -p:Configuration=Release -p:Platform=x64 -p:RunCodeAnalysis=true
+          -p:RaplEnableMmioRead=1 -p:RaplMmioLayoutValidated=1 -p:RaplEnableLiveWrites=1
+          -p:OutDir=${{ runner.temp }}\analysis\out\ -p:IntDir=${{ runner.temp }}\analysis\obj\
+      - name: Check driver package (InfVerif, DriverVer, image)
+        shell: powershell
+        run: ./.github/scripts/driver-package-check.ps1 -OutputDir target/driver/x64/Release
+      - name: Upload unsigned driver package
+        uses: actions/upload-artifact@v4
+        with:
+          name: driver-package-x64-unsigned
+          if-no-files-found: error
+          path: |
+            target/driver/x64/Release/**/rapl-pkg.sys
+            target/driver/x64/Release/**/rapl-pkg.inf
+            target/driver/x64/Release/**/rapl-pkg.cat
+            target/driver/x64/Release/**/rapl-pkg.pdb
