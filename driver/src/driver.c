@@ -48,6 +48,23 @@ static NTSTATUS RaplReadMsr(ULONG id, _Out_ ULONGLONG* value) {
     return STATUS_SUCCESS;
 }
 
+static NTSTATUS RaplWriteMsr(const RAPL_REQUEST* req, _Out_ ULONGLONG* readback) {
+#if !RAPL_ENABLE_LIVE_WRITES
+    UNREFERENCED_PARAMETER(req); UNREFERENCED_PARAMETER(readback);
+    return STATUS_NOT_SUPPORTED;
+#else
+    ULONGLONG current = 0;
+    NTSTATUS status = RaplReadMsr(RaplRegisterPackageLimit, &current);
+    if (!NT_SUCCESS(status) || current != req->ExpectedValue) return STATUS_RETRY;
+    if ((current & RAPL_LOCK_BIT) != 0 || (req->Value & RAPL_LOCK_BIT) != 0) return STATUS_ACCESS_DENIED;
+    if (((current ^ req->Value) & ~RAPL_POWER_FIELD_MASK) != 0) return STATUS_INVALID_PARAMETER;
+    __try { __writemsr(RAPL_MSR_PACKAGE_LIMIT, req->Value); } __except (EXCEPTION_EXECUTE_HANDLER) { return GetExceptionCode(); }
+    status = RaplReadMsr(RaplRegisterPackageLimit, readback);
+    if (!NT_SUCCESS(status) || *readback != req->Value) return STATUS_DATA_ERROR;
+    return STATUS_SUCCESS;
+#endif
+}
+
 static NTSTATUS RaplBuildInfo(_Out_ RAPL_INFO* info) {
     ULONG model = 0, stepping = 0;
     if (!info) return STATUS_INVALID_PARAMETER;
@@ -113,14 +130,14 @@ VOID RaplEvtIoDeviceControl(WDFQUEUE queue, WDFREQUEST request, size_t inputLeng
         goto done;
     }
     if (ioControlCode == IOCTL_RAPL_WRITE_MSR || ioControlCode == IOCTL_RAPL_WRITE_MMIO) {
-#if RAPL_ENABLE_LIVE_WRITES
-        // Deliberately disabled in the checked-in build. A reviewed implementation must:
-        // 1) pin to the package, 2) reread ExpectedValue, 3) apply only RAPL power fields,
-        // 4) read back, and 5) reject lock/reserved-bit changes.
-        status = STATUS_NOT_SUPPORTED;
-#else
-        status = STATUS_NOT_SUPPORTED;
-#endif
+if (ioControlCode == IOCTL_RAPL_WRITE_MSR) {
+            status = RaplValidateRequest(req, RaplRegisterPackageLimit);
+            if (NT_SUCCESS(status)) status = RaplWriteMsr(req, &rsp->Value);
+            if (NT_SUCCESS(status)) information = sizeof(*rsp);
+        } else {
+            // MCHBAR discovery and 32-bit ordering are not yet validated for this platform.
+            status = STATUS_NOT_SUPPORTED;
+        }
         goto done;
     }
 
