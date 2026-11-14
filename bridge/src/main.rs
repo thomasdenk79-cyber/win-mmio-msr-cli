@@ -258,3 +258,14 @@ fn ioctl<T: Copy, R: Default + Copy>(
     }
     output
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn only_fixed_registers_are_accepted() {
+        assert_eq!(check_register("msr-read", 0x606), REG_UNITS);
+        assert_eq!(check_register("msr-read", 0x610), REG_PACKAGE);
+        assert_eq!(check_register("mmio-read", 0x59a0), REG_MMIO);
+    }
+}
