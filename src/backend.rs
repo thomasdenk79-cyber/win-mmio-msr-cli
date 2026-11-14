@@ -1,14 +1,15 @@
 //! Hardware access facade. No kernel drivers or unsigned binaries are bundled.
 //! Real hardware I/O is delegated to a separately audited, local Windows bridge.
 use crate::audit::{
-    audited_write, hex, sanitize_label, sanitize_text, AuditPhase, WriteContext, MAX_DETAIL_CHARS,
-    REGISTER_MMIO_PKG_LIMIT, REGISTER_MSR_PKG_LIMIT,
+    audited_write, hex, record_refusal, sanitize_label, sanitize_text, AuditPhase, WriteContext,
+    MAX_DETAIL_CHARS, REGISTER_MMIO_PKG_LIMIT, REGISTER_MSR_PKG_LIMIT,
 };
+use crate::policy::check_register_write;
 use crate::rapl::{with_power_limits, Units};
 use crate::{SUPPORTED_CPU_FAMILY, SUPPORTED_CPU_MODEL};
 use rapl_core::parse_hex_u64;
-use serde::Serialize;
-use std::collections::BTreeMap;
+use rapl_core::protocol::parse_info;
+pub use rapl_core::protocol::Identity;
 use std::ffi::OsString;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -16,42 +17,8 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-/// Text protocol version of `rapl-bridge info`.
-pub const BRIDGE_PROTOCOL_VERSION: &str = "2";
 /// Largest accepted stdout or stderr of one bridge call.
 pub const MAX_BRIDGE_OUTPUT: usize = 4096;
-
-/// CPU identity and driver capability gates reported by the backend.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct Identity {
-    pub vendor: String,
-    pub model: String,
-    pub cpu_family: u32,
-    pub cpu_model: u32,
-    pub cpu_stepping: u32,
-    pub packages: u32,
-    /// The driver's own CPU gate (vendor, family/model and a single package).
-    pub cpu_supported: bool,
-    /// The driver can read MCHBAR+0x59A0.
-    pub mmio_readable: bool,
-    /// The MCHBAR+0x59A0 layout was validated for this platform.
-    pub mmio_verified: bool,
-    /// The driver accepts register writes.
-    pub live_writes_enabled: bool,
-    #[serde(serialize_with = "serialize_optional_hex")]
-    pub mchbar_base: Option<u64>,
-    pub simulated: bool,
-}
-
-fn serialize_optional_hex<S: serde::Serializer>(
-    value: &Option<u64>,
-    serializer: S,
-) -> Result<S::Ok, S::Error> {
-    match value {
-        Some(value) => serializer.serialize_str(&hex(*value)),
-        None => serializer.serialize_none(),
-    }
-}
 
 pub trait HardwareBackend {
     fn identity(&mut self) -> Result<Identity, String>;
@@ -155,7 +122,7 @@ impl ExternalBridge {
 impl HardwareBackend for ExternalBridge {
     fn identity(&mut self) -> Result<Identity, String> {
         let result = self.call(&["info"])?;
-        parse_identity(&result)
+        parse_info(&result)
     }
     fn read_units(&mut self) -> Result<u64, String> {
         self.read_hex(&["msr-read", "0x606"])
@@ -273,72 +240,6 @@ fn run_process(
     result
 }
 
-/// Parses `rapl-bridge info` (protocol 2). Unknown keys are ignored for forward
-/// compatibility; missing, duplicate or inconsistent fields are rejected.
-fn parse_identity(text: &str) -> Result<Identity, String> {
-    let mut fields = BTreeMap::new();
-    for line in text.lines().map(str::trim).filter(|line| !line.is_empty()) {
-        let (key, value) = line
-            .split_once('=')
-            .ok_or_else(|| format!("Malformed bridge info line: {line}"))?;
-        if fields.insert(key.trim(), value.trim()).is_some() {
-            return Err(format!("Duplicate bridge info field: {}", key.trim()));
-        }
-    }
-    let get = |key: &str| -> Result<&str, String> {
-        fields
-            .get(key)
-            .copied()
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| format!("Missing bridge info field: {key}"))
-    };
-    let protocol = get("protocol")?;
-    if protocol != BRIDGE_PROTOCOL_VERSION {
-        return Err(format!(
-            "Unsupported bridge protocol {protocol} (expected protocol={BRIDGE_PROTOCOL_VERSION})"
-        ));
-    }
-    let flag = |key: &str| -> Result<bool, String> {
-        match get(key)? {
-            "true" => Ok(true),
-            "false" => Ok(false),
-            other => Err(format!("Invalid boolean for {key}: {other}")),
-        }
-    };
-    let hex32 = |key: &str| -> Result<u32, String> {
-        let value = parse_hex_u64(get(key)?).map_err(|e| format!("{key}: {e}"))?;
-        u32::try_from(value).map_err(|_| format!("{key} is out of range"))
-    };
-    let packages = get("packages")?
-        .parse::<u32>()
-        .map_err(|_| "Invalid bridge info field: packages".to_string())?;
-    let mchbar_base = match get("mchbar_base")? {
-        "unavailable" => None,
-        value => Some(parse_hex_u64(value).map_err(|e| format!("mchbar_base: {e}"))?),
-    };
-    let identity = Identity {
-        vendor: sanitize_label(get("vendor")?),
-        model: sanitize_label(get("model")?),
-        cpu_family: hex32("cpu_family")?,
-        cpu_model: hex32("cpu_model")?,
-        cpu_stepping: hex32("cpu_stepping")?,
-        packages,
-        cpu_supported: flag("cpu_supported")?,
-        mmio_readable: flag("mmio_readable")?,
-        mmio_verified: flag("mmio_59a0_64bit_verified")?,
-        live_writes_enabled: flag("live_writes_enabled")?,
-        mchbar_base,
-        simulated: false,
-    };
-    if identity.mmio_verified && !identity.mmio_readable {
-        return Err("Inconsistent bridge info: MMIO layout verified but MMIO not readable".into());
-    }
-    if identity.mmio_readable && identity.mchbar_base.is_none() {
-        return Err("Inconsistent bridge info: MMIO readable without an MCHBAR base".into());
-    }
-    Ok(identity)
-}
-
 /// Raw MSR 0x606 value of the simulation: 1/8 W power unit, 2^-10 s time unit.
 pub const MOCK_UNITS: u64 = 0x000a_0e03;
 /// Simulated MCHBAR base, consistent with the MicroPL address 0xFED159A0.
@@ -415,22 +316,34 @@ impl MockBackend {
             *slot = value;
             Ok(value)
         };
-        match &self.audit_log {
-            Some(log) => {
-                let context = WriteContext {
-                    log,
-                    source: "mock",
-                    command,
-                    register,
-                    units: Units::decode(self.units),
-                    reason: self.audit_reason.as_deref(),
-                    phase: self.audit_phase,
-                    simulated: true,
-                };
-                audited_write(&context, previous, value, store).map(|_| ())
-            }
-            None => store().map(|_| ()),
+        let units = Units::decode(self.units);
+        // Same register policy as rapl-bridge, so simulations refuse what hardware would.
+        let refusal = (previous != value)
+            .then(|| check_register_write(previous, value, units).err())
+            .flatten()
+            .map(|violation| format!("Refusing write to {register}: {violation}"));
+        let Some(log) = &self.audit_log else {
+            return match refusal {
+                Some(refusal) => Err(refusal),
+                None => store().map(|_| ()),
+            };
+        };
+        let context = WriteContext {
+            log,
+            source: "mock",
+            command,
+            register,
+            units,
+            reason: self.audit_reason.as_deref(),
+            phase: self.audit_phase,
+            simulated: true,
+        };
+        if let Some(refusal) = refusal {
+            record_refusal(&context, previous, value, &refusal)
+                .map_err(|e| format!("{refusal}; {e}"))?;
+            return Err(refusal);
         }
+        audited_write(&context, previous, value, store).map(|_| ())
     }
 }
 
@@ -478,54 +391,6 @@ impl HardwareBackend for MockBackend {
 mod tests {
     use super::*;
 
-    const INFO: &str = "protocol=2\nvendor=GenuineIntel\nmodel=Intel(R) Core(TM) i9-13950HX\n\
-        cpu_family=0x6\ncpu_model=0xb7\ncpu_stepping=0x1\npackages=1\ncpu_supported=true\n\
-        mmio_readable=true\nmmio_59a0_64bit_verified=false\nlive_writes_enabled=false\n\
-        mchbar_base=0x00000000fed10000\n";
-
-    fn replace(key: &str, value: &str) -> String {
-        INFO.lines()
-            .map(|line| {
-                if line.starts_with(&format!("{key}=")) {
-                    format!("{key}={value}")
-                } else {
-                    line.to_owned()
-                }
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
-
-    #[test]
-    fn parses_protocol_2_identity() {
-        let identity = parse_identity(&format!("{INFO}future_key=ignored\n")).unwrap();
-        assert_eq!(identity.cpu_family, 6);
-        assert_eq!(identity.cpu_model, 0xb7);
-        assert_eq!(identity.packages, 1);
-        assert!(identity.cpu_supported && identity.mmio_readable);
-        assert!(!identity.mmio_verified && !identity.live_writes_enabled);
-        assert_eq!(identity.mchbar_base, Some(0xfed1_0000));
-        assert!(!identity.simulated);
-    }
-
-    #[test]
-    fn rejects_bad_identity() {
-        let cases = [
-            replace("protocol", "1"),
-            replace("cpu_model", "183"),
-            replace("cpu_supported", "yes"),
-            replace("packages", "-1"),
-            replace("mchbar_base", "unavailable"),
-            replace("mmio_readable", "false").replace("verified=false", "verified=true"),
-            INFO.replace("vendor=GenuineIntel\n", ""),
-            format!("{INFO}vendor=AuthenticAMD\n"),
-            format!("{INFO}garbage\n"),
-        ];
-        for case in cases {
-            assert!(parse_identity(&case).is_err(), "{case}");
-        }
-    }
-
     #[test]
     fn mock_respects_driver_gates() {
         let mut mock = MockBackend {
@@ -539,6 +404,25 @@ mod tests {
         mock.mmio_readable = false;
         assert!(mock.read_mmio_limits().is_err());
         assert_eq!(mock.identity().unwrap().mchbar_base, None);
+    }
+
+    #[test]
+    fn mock_applies_the_bridge_write_policy() {
+        let log =
+            std::env::temp_dir().join(format!("rapl_mock_{}_policy.jsonl", std::process::id()));
+        let _ = std::fs::remove_file(&log);
+        let mut mock = MockBackend::default().with_audit_log(Some(log.clone()), None);
+        let before = mock.msr;
+        let too_high = with_power_limits(before, Units::decode(MOCK_UNITS), 55, 160).unwrap();
+        let error = mock.write_msr_limits(too_high).unwrap_err();
+        assert!(error.starts_with("Refusing write to MSR_0x610"), "{error}");
+        assert_eq!(mock.msr, before);
+        let bytes = std::fs::read(&log).unwrap();
+        let rows = crate::audit::read_log(bytes.as_slice(), None).unwrap().rows;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].outcome.as_deref(), Some("refused"));
+        assert_eq!(rows[0].pl2_set_w, Some(160.0));
+        let _ = std::fs::remove_file(&log);
     }
 
     #[cfg(unix)]

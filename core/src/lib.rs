@@ -1,8 +1,10 @@
 //! Shared, hardware-free building blocks for the CLI, the bridge and the watchdog.
 //!
-//! This crate is the single source of truth for the RAPL register model and the
-//! JSONL audit record format.
+//! This crate is the single source of truth for the RAPL register model, the
+//! PL1/PL2 policy, the bridge info protocol and the JSONL audit record format.
 pub mod audit;
+pub mod policy;
+pub mod protocol;
 pub mod rapl;
 
 /// Parses a strict `0x`-prefixed hexadecimal u64 (1-16 digits, no sign or spaces).

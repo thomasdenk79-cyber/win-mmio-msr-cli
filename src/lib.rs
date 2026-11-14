@@ -1,48 +1,25 @@
 //! High-level, fail-closed orchestration for Intel RAPL package limits.
 pub mod backend;
-pub use rapl_core::{audit, rapl};
+pub use rapl_core::policy::{validate_limits, MAX_TURBO_WATTS, MIN_WATTS, PROCESSOR_BASE_WATTS};
+pub use rapl_core::{audit, policy, protocol, rapl};
 
 use audit::{
     format_watts, hex, sanitize_label, utc_timestamp, AuditPhase, WattColumns,
     REGISTER_MMIO_PKG_LIMIT, REGISTER_MSR_PKG_LIMIT,
 };
 use backend::{HardwareBackend, Identity};
+use policy::check_register_write;
 use rapl::{decode_limits, with_power_limits, Units};
 use std::fmt::Write as _;
 use std::fs::OpenOptions;
 use std::io::Write as _;
 use std::path::Path;
 
-pub const MIN_WATTS: u16 = 5;
-/// Intel processor base power of the i9-13950HX.
-pub const PROCESSOR_BASE_WATTS: u16 = 55;
-/// Intel maximum turbo power of the i9-13950HX.
-pub const MAX_TURBO_WATTS: u16 = 157;
 pub const SUPPORTED_CPU_FAMILY: u32 = 6;
 /// Raptor Lake HX.
 pub const SUPPORTED_CPU_MODEL: u32 = 0xb7;
 pub const SUPPORTED_PROCESSOR_NAME: &str = "i9-13950HX";
 pub const BACKUP_HEADER: &str = "WIN_MMIO_MSR_BACKUP_V2";
-
-/// The single PL1/PL2 policy check shared by the CLI, the planner and the watchdog.
-pub fn validate_limits(
-    pl1_watts: u16,
-    pl2_watts: u16,
-    allow_sustained_above_base: bool,
-) -> Result<(), String> {
-    if pl1_watts < MIN_WATTS || pl2_watts > MAX_TURBO_WATTS || pl2_watts < pl1_watts {
-        return Err(format!(
-            "Use {MIN_WATTS} <= PL1 <= PL2 <= {MAX_TURBO_WATTS} W (got PL1 {pl1_watts} W, PL2 {pl2_watts} W)"
-        ));
-    }
-    if pl1_watts > PROCESSOR_BASE_WATTS && !allow_sustained_above_base {
-        return Err(format!(
-            "PL1={pl1_watts} W exceeds Intel's {PROCESSOR_BASE_WATTS} W processor base power. \
-             Provide --allow-sustained-above-base to acknowledge this."
-        ));
-    }
-    Ok(())
-}
 
 #[derive(Debug, Clone)]
 pub struct Snapshot {
@@ -71,6 +48,7 @@ pub struct Plan {
     pl1_watts: u16,
     pl2_watts: u16,
     blockers: Vec<String>,
+    warnings: Vec<String>,
 }
 
 impl Plan {
@@ -85,6 +63,11 @@ impl Plan {
     /// Reasons why `apply` refuses on this platform; empty when writes are allowed.
     pub fn blockers(&self) -> &[String] {
         &self.blockers
+    }
+
+    /// Findings that do not block apply, such as a rollback the policy would refuse.
+    pub fn warnings(&self) -> &[String] {
+        &self.warnings
     }
 
     /// Register transitions in write order: MMIO first, then MSR.
@@ -209,7 +192,29 @@ pub fn build_plan(
                 .map_err(|e| format!("MMIO MCHBAR+0x59A0: {e}"))
         })
         .transpose()?;
-    let blockers = apply_blockers(&before.identity);
+    let mut blockers = apply_blockers(&before.identity);
+    let mut warnings = Vec::new();
+    let transitions = [
+        (REGISTER_MMIO_PKG_LIMIT, before.mmio, after_mmio),
+        (REGISTER_MSR_PKG_LIMIT, Some(before.msr), Some(after_msr)),
+    ];
+    for (register, current, target) in transitions {
+        let (Some(current), Some(target)) = (current, target) else {
+            continue;
+        };
+        if current == target {
+            continue;
+        }
+        if let Err(violation) = check_register_write(current, target, before.units) {
+            blockers.push(format!("{register}: {violation}"));
+        }
+        if let Err(violation) = check_register_write(target, current, before.units) {
+            warnings.push(format!(
+                "{register}: a rollback to the current value would be refused ({violation}); \
+                 if apply fails, the new limits stay active"
+            ));
+        }
+    }
     Ok(Plan {
         before,
         after_msr,
@@ -217,6 +222,7 @@ pub fn build_plan(
         pl1_watts,
         pl2_watts,
         blockers,
+        warnings,
     })
 }
 
@@ -399,16 +405,6 @@ mod tests {
     }
 
     #[test]
-    fn validates_limits_in_one_place() {
-        assert!(validate_limits(55, 157, false).is_ok());
-        assert!(validate_limits(4, 157, false).is_err());
-        assert!(validate_limits(60, 50, true).is_err());
-        assert!(validate_limits(55, 158, false).is_err());
-        assert!(validate_limits(56, 157, false).is_err());
-        assert!(validate_limits(157, 157, true).is_ok());
-    }
-
-    #[test]
     fn rejects_unsupported_identity() {
         let good = MockBackend::default().identity().unwrap();
         assert!(validate_identity(&good).is_ok());
@@ -483,6 +479,21 @@ mod tests {
         let mut dev = MockBackend::default();
         assert!(build_plan(&mut dev, 157, 157, false).is_err());
         assert!(build_plan(&mut dev, 157, 157, true).is_ok());
+    }
+
+    #[test]
+    fn warns_when_the_policy_would_refuse_a_rollback() {
+        let mut dev = MockBackend::default();
+        let units = Units::decode(dev.units);
+        dev.msr = with_power_limits(dev.msr, units, 55, 200).unwrap();
+        let plan = build_plan(&mut dev, 45, 100, false).unwrap();
+        assert!(plan.blockers().is_empty(), "{:?}", plan.blockers());
+        assert_eq!(plan.warnings().len(), 1, "{:?}", plan.warnings());
+        assert!(plan.warnings()[0].starts_with(REGISTER_MSR_PKG_LIMIT));
+        assert!(build_plan(&mut MockBackend::default(), 45, 100, false)
+            .unwrap()
+            .warnings()
+            .is_empty());
     }
 
     #[test]

@@ -116,6 +116,7 @@ pub fn plan_json(p: &Plan) -> Value {
         "changes": p.changes().iter().map(change_json).collect::<Vec<_>>(),
         "already_applied": p.already_applied(),
         "blockers": p.blockers(),
+        "warnings": p.warnings(),
         "before": snapshot_json(p.before()),
     })
 }
@@ -260,6 +261,13 @@ pub fn plan(p: &Plan, color: bool) -> String {
         "Time windows, clamp, lock and reserved bits are preserved.\n\
          BIOS/EC/DTT may still impose lower limits.\n",
     );
+    for warning in p.warnings() {
+        text.push_str(&format!(
+            "{} {}\n",
+            paint("WARNING:", "33;1", color),
+            clean(warning)
+        ));
+    }
     if !p.blockers().is_empty() {
         text.push_str(&paint("APPLY BLOCKED", "31;1", color));
         text.push('\n');

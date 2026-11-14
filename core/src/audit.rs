@@ -159,6 +159,57 @@ pub enum WriteOutcome {
     Changed,
 }
 
+/// Builds one register-level record of an audited write.
+fn change_record(
+    ctx: &WriteContext<'_>,
+    event: &str,
+    previous: u64,
+    requested: u64,
+    readback: Option<u64>,
+    outcome: &str,
+) -> AuditRecord {
+    let mut record = AuditRecord::new(ctx.source, event)
+        .field("command", ctx.command)
+        .register_change(&RegisterChange {
+            register: ctx.register,
+            units: ctx.units,
+            previous,
+            requested,
+            readback,
+        })
+        .field("outcome", outcome);
+    if let Some(reason) = ctx.reason {
+        record = record.field("reason", sanitize_label(reason));
+    }
+    if let Some(phase) = ctx.phase {
+        record = record.field("phase", phase.as_str());
+    }
+    if ctx.simulated {
+        record = record.field("simulated", true);
+    }
+    record
+}
+
+fn persist(ctx: &WriteContext<'_>, record: AuditRecord) -> Result<(), String> {
+    record
+        .append_to(ctx.log)
+        .map_err(|e| format!("audit log write failed for {}: {e}", ctx.log.display()))
+}
+
+/// Records a write that was refused by policy before any hardware access.
+pub fn record_refusal(
+    ctx: &WriteContext<'_>,
+    previous: u64,
+    requested: u64,
+    error: &str,
+) -> Result<(), String> {
+    persist(
+        ctx,
+        change_record(ctx, "write_refused", previous, requested, None, "refused")
+            .field("error", sanitize_text(error, MAX_DETAIL_CHARS)),
+    )
+}
+
 /// Records one guarded register write: `write_unchanged`, or `write_attempt`
 /// followed by `write_result`. The attempt is persisted before `write` runs, so an
 /// unwritable audit log prevents the hardware write. `write` returns the readback.
@@ -169,48 +220,28 @@ pub fn audited_write(
     write: impl FnOnce() -> Result<u64, String>,
 ) -> Result<WriteOutcome, String> {
     let record = |event: &str, readback: Option<u64>, outcome: &str| {
-        let mut record = AuditRecord::new(ctx.source, event)
-            .field("command", ctx.command)
-            .register_change(&RegisterChange {
-                register: ctx.register,
-                units: ctx.units,
-                previous,
-                requested,
-                readback,
-            })
-            .field("outcome", outcome);
-        if let Some(reason) = ctx.reason {
-            record = record.field("reason", sanitize_label(reason));
-        }
-        if let Some(phase) = ctx.phase {
-            record = record.field("phase", phase.as_str());
-        }
-        if ctx.simulated {
-            record = record.field("simulated", true);
-        }
-        record
-    };
-    let persist = |record: AuditRecord| {
-        record
-            .append_to(ctx.log)
-            .map_err(|e| format!("audit log write failed for {}: {e}", ctx.log.display()))
+        change_record(ctx, event, previous, requested, readback, outcome)
     };
     if previous == requested {
-        persist(record("write_unchanged", Some(previous), "no_change"))?;
+        persist(ctx, record("write_unchanged", Some(previous), "no_change"))?;
         return Ok(WriteOutcome::Unchanged);
     }
-    persist(record("write_attempt", None, "pending"))?;
+    persist(ctx, record("write_attempt", None, "pending"))?;
     match write() {
         Ok(readback) if readback == requested => {
-            persist(record("write_result", Some(readback), "changed"))?;
+            persist(ctx, record("write_result", Some(readback), "changed"))?;
             Ok(WriteOutcome::Changed)
         }
         Ok(readback) => {
-            persist(record("write_result", Some(readback), "readback_mismatch"))?;
+            persist(
+                ctx,
+                record("write_result", Some(readback), "readback_mismatch"),
+            )?;
             Err("register readback did not match the requested value".into())
         }
         Err(error) => {
             persist(
+                ctx,
                 record("write_result", None, "driver_error")
                     .field("error", sanitize_text(&error, MAX_DETAIL_CHARS)),
             )?;
