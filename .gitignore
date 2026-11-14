@@ -1,0 +1,9 @@
+/target/
+/*.exe
+/*.sys
+/*.dll
+/*.pdb
+/backups/
+*.bak
+.idea/
+.vscode/
