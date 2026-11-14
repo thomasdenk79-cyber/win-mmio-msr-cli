@@ -1,48 +1,39 @@
-# Architektur
+# Architecture
 
-~~~text
-                  win-mmio-msr-cli.exe
-                   | Intel-CPU Profil-Gate
-                   | RAPL-Einheiten + RMW
-                   | Snapshot / Plan / Backup
-                   | Readback / Rollback
-                   |
-               HardwareBackend trait
-                 /          \
-           MockBackend    ExternalBridge (Subprozess v1)
-          (implementiert)       |
-                             rapl-bridge.exe
-                            (NOCH OFFEN)
-                                |
-                          eng eingeschränkter,
-                          signierter Windows-Treiber
-                                |
-                          MSR 0x606 [R]
-                          MSR 0x610 [R/W]
-                          MCHBAR+0x59A0 [R/W]
-~~~
+```text
+win-mmio-msr-cli.exe
+  policy, RAPL units, plan, backup, readback, rollback
+        |
+  HardwareBackend
+    |-- MockBackend (tests only)
+    `-- ExternalBridge
+          |
+      rapl-bridge.exe
+          |
+      \\.\RaplPkg
+          |
+      signed KMDF rapl-pkg.sys
+          |-- MSR 0x606 read
+          |-- MSR 0x610 read / gated write
+          `-- validated MCHBAR+0x59A0 only
+```
 
-## Datenmodell
+The CLI never receives a physical address. The bridge accepts only register enumerations and the driver repeats all validation. The service uses the same backend and writes the same audit file.
 
-- MSR 0x606: RAPL-Leistungseinheit 2^(-power_unit) W je Einheit; Zeiteinheit 2^(-time_unit) Sekunden.
-- MSR 0x610: PL1 bits 14:0, enable 15, clamp 16, time 23:17; PL2 bits 46:32, enable 47, clamp 48, time 55:49; lock bit 63.
-- Für MMIO wird dieselbe 64-Bit-Maske nur verwendet, wenn die Bridge das tatsächliche MCHBAR-Registerlayout auf diesem Intel-HX-Gerät geprüft hat.
-- RMW ändert nur die beiden 15-Bit-Leistungswerte und Enable-Bits; alle anderen Bits bleiben erhalten.
+## RAPL register model
 
-## Kontrollierter Schreibablauf
+- MSR 0x606 supplies the power and time units.
+- MSR 0x610 contains PL1/PL2 values, enable bits, clamp bits, time windows and the lock bit.
+- MMIO uses the same layout only after the target platform's MCHBAR register is independently verified.
+- Read-modify-write changes only the approved power and enable fields.
 
-1. CPU-/Plattformidentität prüfen, MSR-Einheiten und beide Raw-Register einlesen.
-2. Wattwerte 5 <= PL1 <= PL2 <= 157 prüfen. Über 55 W PL1 ist zusätzliches Opt-in nötig.
-3. Plan berechnen, beide Originalregister und Zielregister ausgeben, zunächst nichts schreiben.
-4. Unmittelbar vor Apply erneut lesen; bei zwischenzeitlicher Firmwareänderung abbrechen.
-5. Exklusives Backupdatei-Neuanlegen und Synchronisieren.
-6. MMIO schreiben, danach MSR. Reihenfolge ist vom lokalen Agenten plattformspezifisch zu prüfen.
-7. Beide Register erneut lesen; die absichtlich modifizierten Felder müssen exakt übereinstimmen.
-8. Bei Fehler MSR und MMIO bestmöglich zurückschreiben; expliziten Rollback-Status ausgeben.
+## Apply sequence
 
-## Grenzen
-
-- MMIO- und MSR-Schreiben ist keine atomare Transaktion; bei Treiberausfall kann auch der Rollback scheitern.
-- BIOS/EC/DTT, VRM-Limits und Temperaturschutz bleiben wirksam.
-- Keine BIOS-Variablen, TCC-/PROCHOT-Änderungen, PL4-/EC-Manipulationen, kein dauerhaftes Erzwingen.
-- Keine Hintergrunddienste, kein Autostart, kein Watchdog.
+1. Read identity, units and both register paths.
+2. Validate policy limits.
+3. Build and display a plan.
+4. Read again immediately before applying.
+5. Create an exclusive backup.
+6. Write, read back and compare exact intended fields.
+7. On failure, perform guarded rollback and report every result.
+8. The bridge writes durable JSONL audit events for every real change.

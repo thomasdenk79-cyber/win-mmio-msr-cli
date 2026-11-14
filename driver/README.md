@@ -1,16 +1,14 @@
 # `rapl-pkg.sys`
 
-Der Treiber ist ein KMDF/WDK-Projektgerüst. Er wird absichtlich nicht mit MinGW oder einem generischen User-Mode-Treiber gebaut.
+This is a KMDF/WDK driver skeleton. Build it with Visual Studio and the Windows Driver Kit, never with MinGW or a generic user-mode driver.
 
-## Build unter Windows
+## Windows build
 
-1. Visual Studio 2022 mit Windows Driver Kit installieren.
-2. Eine `x64 Native Tools Command Prompt for VS 2022` als Administrator öffnen.
-3. `msbuild`/WDK-KMDF-Vorlagen verwenden und `driver/src/driver.c`, `driver/include/rapl_ioctl.h` sowie `driver/inf/rapl-pkg.inf` einbinden.
-4. `RAPL_ENABLE_LIVE_WRITES=0` beibehalten.
-5. `.sys`, `.inf` und `.cat` mit einer gültigen Test- oder Produktionssignatur versehen.
-6. Vor Installation `signtool verify /kp /c rapl-pkg.cat rapl-pkg.sys` ausführen.
+1. Install Visual Studio 2022 and the Windows Driver Kit.
+2. Open an x64 Native Tools command prompt with WDK environment variables.
+3. Build `driver/src/driver.c` with `driver/include/rapl_ioctl.h` and package `driver/inf/rapl-pkg.inf`.
+4. Keep `RAPL_ENABLE_LIVE_WRITES=0` for validation builds.
+5. Generate the catalog and apply a valid test or production signature.
+6. Verify with `signtool verify /kp /c rapl-pkg.cat rapl-pkg.sys`.
 
-Ohne gültige Signatur, nachvollziehbare PCI-MCHBAR-Prüfung und dokumentierte Read-only-Vergleiche darf der Treiber nicht installiert werden. Secure Boot, HVCI und die Vulnerable Driver Blocklist bleiben aktiv.
-
-Der eingecheckte Treiber kann MSR 0x606/0x610 lesen, meldet MMIO nicht verifiziert und verweigert jede Schreiboperation mit `STATUS_NOT_SUPPORTED`. Das ist der beabsichtigte sichere Ausgangszustand.
+The checked-in driver reads MSR 0x606/0x610, reports MMIO as unverified, and rejects every write with `STATUS_NOT_SUPPORTED`. This is the deliberate safe starting point. Do not install it until the WDK build, signature and validation report are complete.

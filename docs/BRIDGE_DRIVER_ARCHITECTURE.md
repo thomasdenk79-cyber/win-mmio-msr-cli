@@ -1,46 +1,24 @@
-# Bridge- und Treiberarchitektur
+# Bridge and driver architecture
 
-## Ziel
+The privileged path is deliberately split:
 
-`win-mmio-msr-cli.exe` bleibt die Policy-Schicht. Die privilegierte Hardware-Schicht besteht aus zwei getrennten Komponenten:
-
-1. `rapl-bridge.exe`: kleiner Windows-Prozess ohne eigene Registerlogik. Er validiert das v1-Protokoll, öffnet ausschließlich `\\.\RaplPkg`, serialisiert Requests und gibt deterministische Antworten aus.
-2. `rapl-pkg.sys`: enger KMDF-Treiber mit einer festen IOCTL-Whitelist. Er darf ausschließlich die drei explizit freigegebenen Register adressieren.
+1. `rapl-bridge.exe` is a small Windows process that validates the text protocol, opens only `\\.\RaplPkg`, serializes requests and writes audit events.
+2. `rapl-pkg.sys` is a KMDF driver with a fixed IOCTL whitelist and no arbitrary-address API.
 
 ```text
-CLI -> rapl-bridge.exe -> \Device\RaplPkg -> rapl-pkg.sys -> MSR / validiertes MCHBAR
+CLI -> rapl-bridge.exe -> \\.\RaplPkg -> rapl-pkg.sys -> MSR / validated MCHBAR
 ```
 
-## Sicherheitsgates
+The driver state is `UNVERIFIED -> READ_ONLY_VERIFIED -> WRITE_ENABLED`. The checked-in build stops at read-only mode. `RAPL_ENABLE_LIVE_WRITES=0` makes all write IOCTLs return `STATUS_NOT_SUPPORTED`; MMIO remains blocked until PCI MCHBAR discovery and 32-bit access ordering are documented.
 
-- Der Treiber wird mit `RAPL_ENABLE_LIVE_WRITES=0` gebaut. In diesem Modus sind MSR/MMIO-Schreib-IOCTLs absichtlich `STATUS_NOT_SUPPORTED`.
-- `info` meldet `mmio_59a0_64bit_verified=true` erst nach CPU-, Chipsatz-, PCI-BAR- und unabhängiger Read-only-Prüfung.
-- Es gibt keine frei adressierbaren Adressen: Register-ID ist eine Enumeration, keine physische Adresse.
-- Jede IOCTL prüft Version, Strukturgröße, Register-ID, CPU/Package, Reserved-Bits und Schreibmaske.
-- MMIO-Mapping ist nur während einer Operation gültig und wird danach aufgehoben. Eine feste MCHBAR-Adresse ist verboten.
-- Der Gerätetag ist nur für Administratoren und SYSTEM zugänglich; kein User-Mode-Schreibzugriff.
+## Security properties
 
-## Zustandsautomat
+- Register IDs are enumerations, never caller-supplied addresses.
+- IOCTL sizes, version, Reserved fields, register IDs, ExpectedValue, lock and write masks are validated twice.
+- MCHBAR mappings are temporary and must be derived from PCI configuration.
+- The device ACL allows SYSTEM and administrators only.
+- A signed WDK build is required. No Windows security feature may be disabled.
 
-```text
-UNVERIFIED -> READ_ONLY_VERIFIED -> WRITE_ENABLED (separater Build + Review)
-     |               |                      |
-     +-- Fehler -----+----------- STOP <----+
-```
+## Acceptance gate for live writes
 
-`WRITE_ENABLED` wird in diesem Repository nicht automatisch erzeugt. Vorher müssen Intel-Datenblatt, konkrete PCI-Konfiguration, drei Vergleichsmessungen, Signatur und reale Rollback-Tests in `docs/VALIDATION_REPORT.md` dokumentiert sein.
-
-## IOCTL-Vertrag
-
-Der gemeinsame Vertrag liegt in `driver/include/rapl_ioctl.h`. Der Bridge-Prozess verwendet nur:
-
-- `IOCTL_RAPL_GET_INFO`
-- `IOCTL_RAPL_READ_MSR`
-- `IOCTL_RAPL_READ_MMIO`
-- `IOCTL_RAPL_WRITE_MSR` und `IOCTL_RAPL_WRITE_MMIO` erst nach dem Build-Gate
-
-Der Treiber akzeptiert keine Roh-IOCTL mit beliebigen MSR-Nummern oder physischen Adressen.
-
-## Build und Signatur
-
-Der lokale Windows-Agent baut mit Visual Studio/WDK und erzeugt `.sys`, `.inf` und `.cat`. Ohne gültige Test-/Produktionssignatur gilt Livebetrieb als blockiert. HVCI, Secure Boot und die Vulnerable Driver Blocklist werden nicht abgeschaltet.
+Provide `docs/VALIDATION_REPORT.md` with exact CPU/chipset/BIOS data, PCI BAR evidence, three independent read-only comparisons, signature hashes, thermal/WHEA observations, rollback tests and audit samples. Only then may a separately reviewed build enable live writes.
