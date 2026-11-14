@@ -1,35 +1,19 @@
-# Testplan
+# Validation test plan
 
-| Phase | Ort | Vorgang | Erwartung |
-| --- | --- | --- | --- |
-| 0 | CI Linux + Windows | cargo test --all-targets | Mock-/RAPL-Tests grün |
-| 1 | Windows ohne Driver | status --mock, plan --mock | konsistente Rohwerte, keinerlei Hardwareänderung |
-| 2 | Windows ohne Driver | CLI ohne --bridge | verweigert Zugriff |
-| 3 | Windows + Bridge, read-only | info, msr-read, mmio-read | echte CPU/MCHBAR, korrekte Rohwerte |
-| 4 | Windows + Bridge | status und plan | Vergleich mit ThrottleStop/HWiNFO erfolgreich |
-| 5 | Windows + Bridge | unbekanntes CPU-Modell, Lockbit, falsche Adresse | Abbruch VOR Schreiben |
-| 6 | Windows + Bridge | konservativer apply | exklusives Backup, verifiziertes Readback |
-| 7 | Windows + Bridge | simulierte Treiberfehler | Rollback oder klare Fehlermeldung |
-| 8 | Windows + Bridge | Suspend/Resume/Firmware-Override | Verhalten dokumentiert, keine Reapply-Schleife |
+| Phase | Test | Expected result |
+|---|---|---|
+| 0 | Linux CLI and bridge/service tests | All tests, format and Clippy checks pass |
+| 1 | `status --mock`, `plan --mock`, `apply --mock` | No hardware access; backup and rollback work |
+| 2 | Bridge on non-Windows or without device | Clear failure; no register access |
+| 3 | Unknown register/version/size/Reserved IOCTL | Rejected before hardware operation |
+| 4 | Signed driver, read-only mode | MSR reads match independent tools; MMIO remains unverified |
+| 5 | Firmware race before write | Operation aborts without writing |
+| 6 | Corrected register value | JSONL attempt/result events, exact readback and backup |
+| 7 | Same value requested | `write_unchanged`; no hardware write |
+| 8 | Driver failure or timeout | Error is logged; rollback status is explicit |
+| 9 | Watchdog service | Manual start only; correction creates backup and audit events |
+| 10 | Suspend/resume, BIOS override, WHEA/thermal event | Stop or document; no blind reapply loop |
 
-## Messwerte
+## Stop criteria
 
-CPU, BIOS/EC, Chipsatz, Windows-Build, Secure Boot und HVCI/VBS, MSR 0x606/0x610 hex, PCI-MCHBAR und MMIO 0x59A0/0x59A4 hex, PL1/PL2 und Bitflags, Temperatur CPU-Package/PCH/Board/RAM/SSD/VRM, WHEA und Firmware-Override.
-
-## Stop-Kriterien
-
-Unbestätigte MMIO-Adresse, Treiber durch Windows blockiert, nötige Sicherheits-Deaktivierung, inkonsistente Leseergebnisse, EC-/Thermal-Alarm, auffällige Temperaturen, WHEA, fehlgeschlagener Rollback.
-
-**Dauerhaft PL1=157 W ist kein automatischer Test.** Ein erfolgreicher Register-Readback ist kein thermischer Freibrief.
-
-## Bridge-/Treiber-Matrix
-
-| Stufe | Erwartung |
-|---|---|
-| Bridge auf Nicht-Windows | klare Fehlermeldung, kein Device-Zugriff |
-| unbekanntes Register | Bridge lehnt vor IOCTL ab |
-| fehlende Adminrechte | Device-Open schlägt fehl, keine Schreibversuche |
-| Treiber `RAPL_ENABLE_LIVE_WRITES=0` | MSR-Read möglich, MMIO/Write `STATUS_NOT_SUPPORTED` |
-| unbekannter CPUID/Chipsatz | Info bleibt read-only; `mmio_59a0_64bit_verified=false` |
-| ungültige Strukturgröße/Version/Reserved-Bits | `STATUS_INVALID_PARAMETER` |
-| signierter Read-only-Treiber | Vergleich mit HWiNFO/ThrottleStop dokumentieren |
+Unverified MCHBAR base, unsigned or blocked driver, required security disablement, inconsistent reads, unexpected firmware changes, thermal/EC alarm, WHEA or failed rollback.

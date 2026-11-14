@@ -1,72 +1,32 @@
-# AGENTS.md: Handover an den lokalen Windows-Agenten
+# AGENTS.md — Windows hardware handoff
 
-## Ziel
+## Objective
 
-**Die bestehende Rust-CLI fertigstellen, nicht neu schreiben.** Der Kern in src/ berechnet Intel RAPL Power Limits, erstellt Snapshots/Backups, prüft Readback und bietet best-effort Rollback. Der sichere Windows-Hardwarezugriff ist der nächste Arbeitsschritt.
+Complete the existing Rust CLI, Windows bridge, KMDF driver and opt-in watchdog service for the Lenovo ThinkPad P16 Gen 2 / Intel Core i9-13950HX. Keep the design fail-closed and evidence-oriented.
 
-**Zielhardware:** Lenovo ThinkPad P16 Gen 2, Intel Core i9-13950HX, Windows 11. Bekannte Probleme: intermittierende 25-W-PL1-Begrenzung und auffällig hohe Temperaturen von Board/SSD/RAM. Ziel ist Diagnose und kontrollierte MSR-/MMIO-Konfiguration, vergleichbar mit ThrottleStop Sync MMIO.
+## Mandatory security rules
 
-## Verbindliche Sicherheitsregeln
+1. Never expose arbitrary MSR numbers, PCI addresses or physical-memory addresses through an IOCTL or CLI.
+2. Never use RwDrv, WinRing0 or another blocked universal driver. Never disable HVCI, Secure Boot, signature enforcement or the vulnerable-driver blocklist.
+3. The driver whitelist is MSR `0x606` read, MSR `0x610` read/write behind the build gate, and the validated MCHBAR package-limit register only.
+4. Discover the real MCHBAR BAR from PCI configuration. Never copy a physical address from sample code.
+5. Validate every IOCTL size, version, enumeration, Reserved field, package/CPU context, expected value and write mask.
+6. Snapshot before writing. Preserve lock, clamp, time-window and Reserved bits. Read back after writing.
+7. Stop on thermal alarms, WHEA, EC/firmware overrides, unexpected register races or failed rollback.
+8. Sustained PL1=157 W is not an automatic test. The default policy is PL1=55 W, PL2=157 W.
+9. Every actual change must be recorded in the append-only JSONL audit log with UTC timestamp, register, previous value, requested value, readback and outcome.
+10. The watchdog service is manual and opt-in. It must never become an unreviewed auto-reapply loop.
 
-1. Keine frei adressierbaren MSR-, PCI- oder physischen Speicher-Schreibbefehle über CLI oder Kernel-API.
-2. Kein RwDrv/WinRing0 oder anderer blockierter Universaltreiber. HVCI/Memory Integrity, Signaturzwang und Vulnerable Driver Blocklist NICHT deaktivieren.
-3. Im Kernel NUR die notwendigen CPU-Register freigeben: MSR 0x606 READ, 0x610 READ/WRITE; MMIO ausschließlich MCHBAR+0x59A0 im verifizierten Intel-Profil.
-4. MCHBAR-Basis nicht als fixe physische Adresse aus Beispielcode kopieren. Vorher PCI-Basis, Enable-Bit, gültigen BAR-Bereich, Offset, 32/64-Bit-Layout und Lock-Bits nachweisen.
-5. Treiberzugriff nur Administrator/SYSTEM; ungültige IOCTLs, Datenlängen, CPUs, PCI-Geräte und Werte ablehnen.
-6. Nie Lock-/Clamp-/Zeitfenster-/Reserved-Bits ohne separate technische Freigabe verändern. Vorher Snapshot, persistentes Backup und Nachher-Readback.
-7. Bei Übertemperatur, WHEA, EC-Alarmen, Treiberproblemen und unerwartetem Firmware-Override STOPPEN, nicht mit enger Polling-Schleife dagegen schreiben.
-8. 157 W ist Max Turbo, nicht freigegebener dauerhafter PL1. 157-W-PL1-Belastung gehört NICHT in die automatische Testmatrix.
+## Required validation
 
-## Bereits umgesetzt
+- `cargo test --all-targets`
+- `cargo fmt --all -- --check`
+- `cargo clippy --all-targets -- -D warnings`
+- `cargo test --manifest-path bridge/Cargo.toml`
+- `cargo test --manifest-path service/Cargo.toml`
+- Windows MSVC release builds for CLI, bridge and service
+- WDK/KMDF build, INF/catalog generation and signature verification
+- Read-only comparison of MSR 0x606/0x610 and MMIO against HWiNFO and ThrottleStop
+- `docs/VALIDATION_REPORT.md` with CPU, BIOS, Windows build, Secure Boot/HVCI, raw values, temperatures, WHEA and audit-log samples
 
-- **src/rapl.rs:** RAPL-Units, limitierte RMW-Maske, Decoder und Unit-Tests
-- **src/backend.rs:** HardwareBackend, MockBackend, sichere Prozess-Bridge-Schnittstelle
-- **src/lib.rs:** CPU-Profilcheck, Snapshot, Plan, Backup, Apply, Readback, Rollback
-- **src/main.rs:** CLI status / plan / apply, Opt-in-Flags
-- **docs/BRIDGE_PROTOCOL.md:** konkreter v1-Vertrag
-
-## Arbeitspakete
-
-### A. Build und statische Tests
-
-- Rust stable auf Windows x64 (MSVC), cargo test --all-targets, cargo build --release.
-- Compiler-/Lint-Probleme beheben, cargo fmt, cargo clippy -- -D warnings.
-- Zusätzliche Tests: Firmware-Races, Lockbits, Backup-Fehler, Rollback, ungültige Wattwerte, Konkurrenz mehrerer Bridge-Prozesse.
-
-### B. CPU und MMIO-Adressen verifizieren
-
-- CPU CPUID, Chipsatz, BIOS, Windows-Build, Secure Boot, HVCI/VBS, CPU-Core-/Gruppenaffinität aufnehmen.
-- Offizielle Intel-Raptor-Lake-HX-Unterlagen auf MCHBAR und Package-RAPL-Limit beziehen.
-- Die tatsächliche MCHBAR-Basis aus PCI-Konfiguration korrekt ermitteln; MMIO-Offset 0x59A0 und 64-Bit-Layout bestätigen.
-- Read-only drei unabhängige Vergleichsmessungen: MSR 0x606, MSR 0x610, MCHBAR 0x59A0/0x59A4, ThrottleStop/HWiNFO. Nur bei validierter Übereinstimmung mmio_59a0_64bit_verified=true zurückgeben.
-- Ursachen des 25-W-Firmware-Limits dokumentieren statt sie zu übersteuern.
-
-### C. Windows-Bridge IMPLEMENTIEREN (noch offen)
-
-- Separates rapl-bridge.exe mit dem v1-Protokoll unter docs/BRIDGE_PROTOCOL.md implementieren.
-- Eng eingeschränkten, auditierbaren, korrekt signierten KMDF/WDM-Treiber oder vergleichbaren genehmigten Windows-Zugriff entwickeln. **Keine** ungesicherte universelle IOCTL-/MSR-/MMIO-Schnittstelle.
-- ACL/SDDL, IOCTL-Validierung, CPU-Affinität, Speicher-Mapping-Lifetime, PCI-Erkennung und Datenbreite nachweisen.
-- Treibersignatur, WDK-Build, INF und Prüfsummen dokumentieren. Ohne Signatur gilt Livebetrieb als BLOCKIERT.
-- Erst Read-only-Kommandos info/msr-read/mmio-read. Nach unabhängiger Verifikation Schreibkommandos hinzufügen und Readback implementieren.
-- Keine Binary-Treiber von Drittprojekten ins Repository übernehmen.
-
-### D. Tests auf echter Hardware
-
-- Phase 1: Mock und Windows Build.
-- Phase 2: Read-only Bridge; alle Rohwerte unabhängig verifizieren.
-- Phase 3: konservative Konfiguration PL1=55 W, PL2=157 W, Backups und direkte Readbacks, mit Monitoring.
-- Fehler-Simulation, Suspend/Resume, Reboot, BIOS-/DTT-Override, Admin-/Nicht-Admin, CPU-Affinität untersuchen.
-- CPU/Board/PCH/SSD/RAM und WHEA protokollieren.
-- **Kein** Dienst, Autostart, Watchdog oder automatisches Reapply ohne ausdrückliche Freigabe.
-
-### E. Ergebnis und Abnahme
-
-- CI grün, dokumentierter x64-Releasebuild, Quellcode aller Komponenten, Release-ZIP mit SHA256.
-- docs/VALIDATION_REPORT.md anlegen: Hardware, Rohwerte, Messvergleich, Tests, signierter Treiberstatus, Einschränkungen und Risiken.
-- Nicht hardware-fertig melden, solange Treiber oder MMIO-Verifikation fehlen.
-
-## Abnahmekriterien
-
-Mock funktioniert ohne Treiber; unsupported CPUs/Lockbits/unpassende MMIO-Basis brechen ab; MSR/MMIO-Limits bleiben auf den beiden Pfaden synchron; alle absichtlich geänderten Bits werden korrekt zurückgelesen; Fehlschläge liefern verständliche Fehler/Backup/Rollback-Status; keine Windows-Sicherheitsmaßnahme muss abgeschaltet werden.
-
-Primärdokumentation unter docs/ und README. Technische Änderungen mit nachprüfbarer Quelle begründen.
+Do not claim hardware readiness while MMIO verification or driver signing is missing.
