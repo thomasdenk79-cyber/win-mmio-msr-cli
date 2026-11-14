@@ -1,6 +1,6 @@
 [package]
 name = "win-mmio-msr-cli"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 description = "Windows Intel RAPL package power limit CLI with a fail-closed hardware bridge"
 license = "MIT"

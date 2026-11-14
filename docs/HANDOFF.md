@@ -1,30 +1,54 @@
-# Handoff for the local Windows agent
+# Handoff for the Windows hardware work
 
-The repository contains the policy CLI, fixed-whitelist bridge, fail-closed KMDF driver core and manual watchdog service. The driver reads MSR 0x606/0x610. MMIO and live writes remain gated until the target platform is independently validated.
+## State
 
-## Local build
+- The Rust workspace (CLI, bridge, watchdog, shared `rapl-core`) is complete for the simulation
+  and is tested on Linux and Windows in CI, including a CLI smoke test and a watchdog installation
+  against the real Service Control Manager.
+- The KMDF driver builds in CI with warnings as errors, code analysis (Driver Recommended Rules),
+  ApiValidator and InfVerif. The package is unsigned and has never run on hardware.
+- All driver gates are off: the default build only reads MSR `0x606` and `0x610`.
+- `plan`, `apply` and `audit` show PL1/PL2 before and set in watts for every register path; the
+  audit log stores them for every register change.
+
+The review findings and their status are listed in [ARCHITECTURE_REVIEW.md](ARCHITECTURE_REVIEW.md).
+
+## Build and test
 
 ```powershell
-cargo test --all-targets
 cargo fmt --all -- --check
-cargo clippy --all-targets -- -D warnings
-cargo test --manifest-path bridge/Cargo.toml
-cargo test --manifest-path service/Cargo.toml
-cargo build --release
-cargo build --manifest-path bridge/Cargo.toml --release --target x86_64-pc-windows-msvc
-cargo build --manifest-path service/Cargo.toml --release --target x86_64-pc-windows-msvc
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --all-targets --locked
+cargo build --workspace --release --locked --target x86_64-pc-windows-msvc
+.\scripts\smoke.ps1
+.\scripts\build.ps1 -Driver      # same checks plus the driver package (needs the WDK)
 ```
 
 ## Hardware work
 
-1. Build the KMDF driver with WDK/MSVC and keep `RAPL_ENABLE_LIVE_WRITES=0`.
-2. Verify CPUID, exact processor name, chipset, BIOS/EC, Windows build, Secure Boot and HVCI/VBS.
-3. Discover and validate the real PCI MCHBAR BAR and the package-limit register at offset 0x59A0/0x59A4.
-4. Capture three independent read-only comparisons against HWiNFO/ThrottleStop.
-5. Install only a correctly signed driver; do not bypass Windows security.
-6. Review the audit JSONL and backup behavior before enabling any write gate.
-7. Add `docs/VALIDATION_REPORT.md` with raw before/after values, temperatures, WHEA results and signature hashes.
+Record every step in a copy of [VALIDATION_REPORT_TEMPLATE.md](VALIDATION_REPORT_TEMPLATE.md).
 
-## Evidence collection
+1. Record the system identity: CPUID, processor name, BIOS and EC versions, Windows build, Secure
+   Boot, HVCI/VBS and the vulnerable-driver blocklist state.
+2. Obtain a Microsoft-signed build of the default (read-only) driver package, for example through
+   attestation signing. Never disable Secure Boot, HVCI or driver signature enforcement.
+3. Install it (see [driver/README.md](../driver/README.md)) and compare `status` three times
+   against HWiNFO and ThrottleStop for MSR `0x606` and `0x610`.
+4. Build with `RaplEnableMmioRead=1`, sign, and collect the PCI MCHBAR evidence (host bridge
+   `0:0.0` offset `0x48`, enable bit, base) and three read-only comparisons of `MCHBAR+0x59A0`.
+5. Only after an independent review of the report: build with `RaplMmioLayoutValidated=1` and
+   `RaplEnableLiveWrites=1`, then test `apply` with a small change, the rollback and the audit
+   records.
+6. Test the watchdog last, with a low correction budget.
 
-Use a protected path such as `C:\ProgramData\WinMmioMsr\rapl-audit.jsonl`. Preserve the original JSONL file and all backup files. Every `write_attempt`, `write_result`, `write_unchanged`, `correction_detected` and `correction_verified` entry must have a UTC timestamp and register values.
+## Stop criteria
+
+Stop and document instead of continuing when values differ between tools or reads, firmware or
+the EC changes the limits unexpectedly, a thermal alarm or WHEA error occurs, a rollback fails, or
+any step would require disabling a Windows security feature.
+
+## Evidence
+
+Use protected paths such as `C:\ProgramData\WinMmioMsr\rapl-audit.jsonl` and
+`C:\ProgramData\WinMmioMsr\backups\`. Keep the original audit log and all backups unchanged and
+attach read-only copies and `win-mmio-msr-cli audit <log> --csv` exports to the report.
