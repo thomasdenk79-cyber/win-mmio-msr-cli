@@ -21,3 +21,15 @@ CPU, BIOS/EC, Chipsatz, Windows-Build, Secure Boot und HVCI/VBS, MSR 0x606/0x610
 Unbestätigte MMIO-Adresse, Treiber durch Windows blockiert, nötige Sicherheits-Deaktivierung, inkonsistente Leseergebnisse, EC-/Thermal-Alarm, auffällige Temperaturen, WHEA, fehlgeschlagener Rollback.
 
 **Dauerhaft PL1=157 W ist kein automatischer Test.** Ein erfolgreicher Register-Readback ist kein thermischer Freibrief.
+
+## Bridge-/Treiber-Matrix
+
+| Stufe | Erwartung |
+|---|---|
+| Bridge auf Nicht-Windows | klare Fehlermeldung, kein Device-Zugriff |
+| unbekanntes Register | Bridge lehnt vor IOCTL ab |
+| fehlende Adminrechte | Device-Open schlägt fehl, keine Schreibversuche |
+| Treiber `RAPL_ENABLE_LIVE_WRITES=0` | MSR-Read möglich, MMIO/Write `STATUS_NOT_SUPPORTED` |
+| unbekannter CPUID/Chipsatz | Info bleibt read-only; `mmio_59a0_64bit_verified=false` |
+| ungültige Strukturgröße/Version/Reserved-Bits | `STATUS_INVALID_PARAMETER` |
+| signierter Read-only-Treiber | Vergleich mit HWiNFO/ThrottleStop dokumentieren |
