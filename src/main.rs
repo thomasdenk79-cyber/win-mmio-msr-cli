@@ -16,8 +16,8 @@ use win_mmio_msr_cli::{
 #[derive(Parser, Debug)]
 #[command(
     version,
-    about = "Intel RAPL: MSR + MMIO kontrolliert synchronisieren",
-    long_about = "Intel RAPL: Diagnose, Planung und kontrollierte PL1/PL2-Konfiguration.\nLivebetrieb benötigt eine separat validierte Windows-Bridge. --mock arbeitet ohne Hardware."
+    about = "Intel RAPL: controlled MSR + MMIO synchronization",
+    long_about = "Intel RAPL: diagnostics, planning and controlled PL1/PL2 configuration.\nLive operation requires a separately validated Windows bridge. --mock performs no hardware access."
 )]
 struct Cli {
     #[arg(
@@ -25,10 +25,14 @@ struct Cli {
         global = true,
         value_enum,
         default_value = "auto",
-        help = "Terminalfarben (JSON bleibt farblos)"
+        help = "Terminal colors (JSON is always plain)"
     )]
     color: Color,
-    #[arg(long, global = true, help = "Ein JSON-Dokument statt Terminalansicht")]
+    #[arg(
+        long,
+        global = true,
+        help = "Emit one JSON document instead of terminal output"
+    )]
     json: bool,
     #[command(subcommand)]
     command: Commands,
@@ -44,12 +48,12 @@ enum Color {
 #[derive(Args, Debug)]
 #[group(required = true, multiple = false)]
 struct BackendChoice {
-    #[arg(long, help = "Simulation ohne Hardwarezugriff")]
+    #[arg(long, help = "Simulation without hardware access")]
     mock: bool,
     #[arg(
         long,
         value_name = "EXE",
-        help = "Expliziter Pfad zur auditierten Windows-Bridge"
+        help = "Explicit path to the audited Windows bridge"
     )]
     bridge: Option<PathBuf>,
 }
@@ -65,7 +69,7 @@ struct Connection {
         help = "Append-only JSONL audit log for real register changes"
     )]
     audit_log: Option<PathBuf>,
-    #[arg(long, default_value_t = 10000, value_parser = clap::value_parser!(u64).range(100..=120000), help = "Timeout je Bridge-Aufruf in Millisekunden")]
+    #[arg(long, default_value_t = 10000, value_parser = clap::value_parser!(u64).range(100..=120000), help = "Timeout per bridge call in milliseconds")]
     timeout_ms: u64,
 }
 
@@ -77,17 +81,17 @@ enum Preset {
 
 #[derive(Args, Debug)]
 struct Limits {
-    #[arg(long, required_unless_present = "preset", conflicts_with = "preset", value_parser = clap::value_parser!(u16).range(5..=157), help = "PL1 in Watt")]
+    #[arg(long, required_unless_present = "preset", conflicts_with = "preset", value_parser = clap::value_parser!(u16).range(5..=157), help = "PL1 in watts")]
     pl1: Option<u16>,
-    #[arg(long, required_unless_present = "preset", conflicts_with = "preset", value_parser = clap::value_parser!(u16).range(5..=157), help = "PL2 in Watt, mindestens PL1")]
+    #[arg(long, required_unless_present = "preset", conflicts_with = "preset", value_parser = clap::value_parser!(u16).range(5..=157), help = "PL2 in watts, at least PL1")]
     pl2: Option<u16>,
     #[arg(
         long,
         value_enum,
-        help = "base=55/157 W; turbo=157/157 W (Opt-in erforderlich)"
+        help = "base=55/157 W; turbo=157/157 W (explicit opt-in)"
     )]
     preset: Option<Preset>,
-    #[arg(long, help = "PL1 über 55 W ausdrücklich zulassen")]
+    #[arg(long, help = "Explicitly allow PL1 above 55 W")]
     allow_sustained_above_base: bool,
 }
 impl Limits {
@@ -96,15 +100,15 @@ impl Limits {
             Some(Preset::Base) => (55, 157),
             Some(Preset::Turbo) => (157, 157),
             None => (
-                self.pl1.ok_or("--pl1 fehlt")?,
-                self.pl2.ok_or("--pl2 fehlt")?,
+                self.pl1.ok_or("--pl1 is missing")?,
+                self.pl2.ok_or("--pl2 is missing")?,
             ),
         };
         if pair.0 > pair.1 {
-            return Err("PL1 darf PL2 nicht überschreiten".into());
+            return Err("PL1 must not exceed PL2".into());
         }
         if pair.0 > 55 && !self.allow_sustained_above_base {
-            return Err("PL1 > 55 W benötigt --allow-sustained-above-base".into());
+            return Err("PL1 above 55 W requires --allow-sustained-above-base".into());
         }
         Ok(pair)
     }
@@ -112,34 +116,34 @@ impl Limits {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    /// Aktuelle Register und Limits lesen
+    /// Read current registers and limits
     Status {
         #[command(flatten)]
         connection: Connection,
     },
-    /// Vorher/Nachher vergleichen, ohne Register zu schreiben
+    /// Show before/after plan without writing registers
     Plan {
         #[command(flatten)]
         connection: Connection,
         #[command(flatten)]
         limits: Limits,
     },
-    /// Backup erstellen, schreiben und Ergebnis zurücklesen
+    /// Create backup, write and verify readback
     Apply {
         #[command(flatten)]
         connection: Connection,
         #[command(flatten)]
         limits: Limits,
-        #[arg(long, required = true, help = "Schreibvorgang ausdrücklich bestätigen")]
+        #[arg(long, required = true, help = "Explicitly confirm the write operation")]
         yes: bool,
         #[arg(
             long,
             value_name = "NEW_FILE",
-            help = "Neue Backupdatei (wird niemals überschrieben)"
+            help = "New backup file (never overwritten)"
         )]
         backup: PathBuf,
     },
-    /// Shell-Vervollständigung ausgeben (z. B. powershell)
+    /// Emit shell completion (for example PowerShell)
     Completions { shell: clap_complete::Shell },
 }
 
@@ -147,7 +151,11 @@ fn backend(connection: &Connection) -> Result<Box<dyn HardwareBackend>, String> 
     if connection.backend.mock {
         return Ok(Box::new(MockBackend::default()));
     }
-    let path = connection.backend.bridge.clone().ok_or("Bridge fehlt")?;
+    let path = connection
+        .backend
+        .bridge
+        .clone()
+        .ok_or("bridge path is missing")?;
     Ok(Box::new(
         ExternalBridge::with_timeout(path, Duration::from_millis(connection.timeout_ms))?
             .with_audit_log(connection.audit_log.clone()),

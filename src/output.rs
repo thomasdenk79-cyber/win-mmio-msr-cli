@@ -28,7 +28,7 @@ pub fn snapshot(s: &Snapshot, color: bool) -> String {
         env!("CARGO_PKG_VERSION"),
         paint(
             if s.identity.simulated {
-                "SIMULATION / KEINE HARDWARE"
+                "SIMULATION / NO HARDWARE"
             } else {
                 "LIVE / WINDOWS BRIDGE"
             },
@@ -40,25 +40,25 @@ pub fn snapshot(s: &Snapshot, color: bool) -> String {
     text.push_str(&format!(
         "{}\n",
         paint(
-            "Pfad       PL1 [W]   PL2 [W]   Aktiv 1/2   Clamp 1/2   Lock",
+            "Path       PL1 [W]   PL2 [W]   Enabled 1/2   Clamp 1/2   Lock",
             "34;1",
             color
         )
     ));
     for (name, raw) in [("MSR", s.msr), ("MMIO", s.mmio)] {
         let d = decode_limits(raw, s.units);
-        text.push_str(&format!("{name:<9} {:>8.3}  {:>8.3}   {:>5}/{:<5} {:>5}/{:<5} {}\n  raw 0x{raw:016x} | Zeitfenster-Codes: {} / {}\n",d.pl1.watts,d.pl2.watts,d.pl1.enabled,d.pl2.enabled,d.pl1.clamp,d.pl2.clamp,d.locked,d.pl1.time_window,d.pl2.time_window));
+        text.push_str(&format!("{name:<9} {:>8.3}  {:>8.3}   {:>5}/{:<5} {:>5}/{:<5} {}\n  raw 0x{raw:016x} | Time-window codes: {} / {}\n",d.pl1.watts,d.pl2.watts,d.pl1.enabled,d.pl2.enabled,d.pl1.clamp,d.pl2.clamp,d.locked,d.pl1.time_window,d.pl2.time_window));
     }
     text.push_str(&format!(
-        "\nEinheiten: {:.8} W / {:.8} s\n",
+        "\nUnits: {:.8} W / {:.8} s\n",
         s.units.watts_per_unit, s.units.seconds_per_unit
     ));
     let sync = win_mmio_msr_cli::rapl::power_fields_equal(s.msr, s.mmio);
     text.push_str(&paint(
         if sync {
-            "PL1/PL2 und Enable-Bits sind synchron."
+            "PL1/PL2 and enable bits are synchronized."
         } else {
-            "ABWEICHUNG: MSR und MMIO haben unterschiedliche Power-Felder."
+            "MISMATCH: MSR and MMIO power fields differ."
         },
         if sync { "32" } else { "33;1" },
         color,
@@ -69,5 +69,5 @@ pub fn snapshot(s: &Snapshot, color: bool) -> String {
 pub fn plan(p: &Plan, color: bool) -> String {
     let (msr, mmio) = p.targets();
     let (pl1, pl2) = p.watts();
-    format!("{}\n{}\nZiel: PL1 {pl1} W / PL2 {pl2} W\nMSR   0x{:016x} -> 0x{msr:016x}\nMMIO  0x{:016x} -> 0x{mmio:016x}\nZeitfenster, Clamp, Lock und reservierte Bits bleiben erhalten.\nBIOS/EC/DTT können weiterhin begrenzen.\n",snapshot(p.before(),color),paint("ÄNDERUNGSPLAN", "35;1",color),p.before().msr,p.before().mmio)
+    format!("{}\n{}\nZiel: PL1 {pl1} W / PL2 {pl2} W\nMSR   0x{:016x} -> 0x{msr:016x}\nMMIO  0x{:016x} -> 0x{mmio:016x}\nTime windows, clamp, lock and Reserved bits are preserved.\nBIOS/EC/DTT may still impose lower limits.\n",snapshot(p.before(),color),paint("CHANGE PLAN", "35;1",color),p.before().msr,p.before().mmio)
 }
