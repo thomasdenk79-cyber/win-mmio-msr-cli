@@ -132,9 +132,13 @@ static NTSTATUS RaplFindMchbar(_Out_ PULONGLONG Base)
     ULONG read;
 
     *Base = 0;
-    /* A control device has no PCI PDO, so the HAL is the only configuration reader. */
+    /*
+     * A non-PnP control device is not in the host bridge's device stack, so it cannot query
+     * BUS_INTERFACE_STANDARD (IRP_MN_QUERY_INTERFACE). HalGetBusDataByOffset is obsolete
+     * (C4996, C28159) but still exported; replacing it needs a PnP filter on the host bridge.
+     */
 #pragma warning(push)
-#pragma warning(disable : 4996)
+#pragma warning(disable : 4996 28159)
     read = HalGetBusDataByOffset(PCIConfiguration, 0, 0, &vendor, 0, sizeof(vendor));
     if (read != sizeof(vendor) || vendor != RAPL_VENDOR_INTEL) {
         return STATUS_NOT_SUPPORTED;

@@ -126,3 +126,5 @@ finally {
     Remove-Item -LiteralPath $Work -Recurse -Force -ErrorAction SilentlyContinue
 }
 Write-Host 'Smoke test passed. No hardware was accessed.'
+# The refusal checks leave a non-zero $LASTEXITCODE behind, which callers such as CI would report.
+exit 0
