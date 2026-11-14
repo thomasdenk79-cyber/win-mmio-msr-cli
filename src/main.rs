@@ -58,6 +58,13 @@ struct BackendChoice {
 struct Connection {
     #[command(flatten)]
     backend: BackendChoice,
+    #[arg(
+        long,
+        global = true,
+        value_name = "PATH",
+        help = "Append-only JSONL audit log for real register changes"
+    )]
+    audit_log: Option<PathBuf>,
     #[arg(long, default_value_t = 10000, value_parser = clap::value_parser!(u64).range(100..=120000), help = "Timeout je Bridge-Aufruf in Millisekunden")]
     timeout_ms: u64,
 }
@@ -141,10 +148,10 @@ fn backend(connection: &Connection) -> Result<Box<dyn HardwareBackend>, String> 
         return Ok(Box::new(MockBackend::default()));
     }
     let path = connection.backend.bridge.clone().ok_or("Bridge fehlt")?;
-    Ok(Box::new(ExternalBridge::with_timeout(
-        path,
-        Duration::from_millis(connection.timeout_ms),
-    )?))
+    Ok(Box::new(
+        ExternalBridge::with_timeout(path, Duration::from_millis(connection.timeout_ms))?
+            .with_audit_log(connection.audit_log.clone()),
+    ))
 }
 
 fn execute(cli: &Cli, color: bool) -> Result<String, String> {

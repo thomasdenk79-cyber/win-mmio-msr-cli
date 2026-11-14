@@ -27,6 +27,7 @@ pub trait HardwareBackend {
 pub struct ExternalBridge {
     path: PathBuf,
     timeout: Duration,
+    audit_log: Option<PathBuf>,
 }
 
 impl ExternalBridge {
@@ -56,11 +57,17 @@ impl ExternalBridge {
         Ok(Self {
             path: full,
             timeout,
+            audit_log: None,
         })
     }
 
+    pub fn with_audit_log(mut self, path: Option<PathBuf>) -> Self {
+        self.audit_log = path;
+        self
+    }
+
     fn call(&self, args: &[&str]) -> Result<String, String> {
-        run_process(&self.path, args, self.timeout)
+        run_process(&self.path, args, self.timeout, self.audit_log.as_deref())
     }
 
     fn read_hex(&self, args: &[&str]) -> Result<u64, String> {
@@ -107,9 +114,18 @@ impl HardwareBackend for ExternalBridge {
 }
 
 // Cap each pipe while reading, not after unbounded Command::output allocation.
-fn run_process(path: &std::path::Path, args: &[&str], timeout: Duration) -> Result<String, String> {
-    let mut child = Command::new(path)
-        .args(args)
+fn run_process(
+    path: &std::path::Path,
+    args: &[&str],
+    timeout: Duration,
+    audit_log: Option<&std::path::Path>,
+) -> Result<String, String> {
+    let mut command = Command::new(path);
+    command.args(args);
+    if let Some(log) = audit_log {
+        command.env("RAPL_AUDIT_LOG", log);
+    }
+    let mut child = command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

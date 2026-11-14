@@ -1,7 +1,25 @@
 #![cfg_attr(not(windows), allow(dead_code))]
-#[cfg(windows)]
-use std::env;
 use std::io::{self, Write};
+use std::path::PathBuf;
+
+fn audit_event(event: &str, command: &str, register: u32, previous: u64, requested: u64, readback: Option<u64>, outcome: &str) {
+    let Some(path) = std::env::var_os("RAPL_AUDIT_LOG").map(PathBuf::from) else { return; };
+    let value = serde_json::json!({
+        "timestamp_utc": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+        "event": event, "command": command, "register_id": register,
+        "register": match register { REG_UNITS => "MSR_0x606", REG_PACKAGE => "MSR_0x610", REG_MMIO => "MMIO_MCHBAR_0x59A0", _ => "UNKNOWN" },
+        "previous": format!("0x{previous:016x}"), "requested": format!("0x{requested:016x}"),
+        "readback": readback.map(|v| format!("0x{v:016x}")), "outcome": outcome,
+        "pid": std::process::id(), "source": "rapl-bridge"
+    });
+    let line = serde_json::to_string(&value).unwrap_or_else(|_| "{\"outcome\":\"audit_serialization_error\"}".into());
+    let result = (|| -> io::Result<()> {
+        if let Some(parent) = path.parent() { std::fs::create_dir_all(parent)?; }
+        let mut file = std::fs::OpenOptions::new().create(true).append(true).open(&path)?;
+        writeln!(file, "{line}")?; file.sync_all()
+    })();
+    if let Err(error) = result { fail(format!("audit log write failed for {}: {error}", path.display())); }
+}
 
 const DEVICE: &str = r"\\.\RaplPkg";
 const fn ctl(function: u32, access: u32) -> u32 {
@@ -80,7 +98,7 @@ fn main() {
 
 #[cfg(windows)]
 fn main() {
-    let mut args = env::args().skip(1);
+    let mut args = std::env::args().skip(1);
     let command=args.next().unwrap_or_else(|| fail("usage: rapl-bridge.exe info|msr-read 0x606|msr-write 0x610 0xVALUE|mmio-read 0x59a0|mmio-write 0x59a0 0xVALUE"));
     let handle = open_device();
     match command.as_str() {
@@ -131,6 +149,13 @@ fn main() {
                 },
             );
             check_response(current, id);
+            if current.value == requested {
+                audit_event("write_unchanged", &command, id, current.value, requested, Some(current.value), "no_change");
+                println!("OK");
+                unsafe { windows_sys::Win32::Foundation::CloseHandle(handle); }
+                return;
+            }
+            audit_event("write_attempt", &command, id, current.value, requested, None, "pending");
             let r: Response = ioctl(
                 handle,
                 if command == "msr-write" {
@@ -149,8 +174,10 @@ fn main() {
             );
             check_response(r, id);
             if r.value != requested {
+                audit_event("write_result", &command, id, current.value, requested, Some(r.value), "readback_mismatch");
                 fail("driver write readback did not match")
             };
+            audit_event("write_result", &command, id, current.value, requested, Some(r.value), "changed");
             println!("OK");
         }
         _ => fail("unknown command"),
