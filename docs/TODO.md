@@ -15,9 +15,9 @@ validation report (copy of [VALIDATION_REPORT_TEMPLATE.md](VALIDATION_REPORT_TEM
 - [ ] E3 `sc.exe start rapl-pkg`; `win-mmio-msr-cli status --bridge <eval dir>\rapl-bridge.exe`.
       Evidence: output, `sc.exe query rapl-pkg`, Code Integrity events (Microsoft-Windows-CodeIntegrity/Operational).
 - [ ] E4 Compare MSR `0x606`/`0x610` three times with HWiNFO or ThrottleStop (template section 4).
-- [ ] E4a Try [Intel XTU](https://www.intel.com/content/www/us/en/download/17881/) (`XtuCli.exe`,
-      signed, no test signing needed) as a simpler path for plain PL1/PL2 setting; record whether
-      the vendor BIOS/EC reverts it (see EVALUATION.md).
+- [x] E4a Tried [Intel XTU](https://www.intel.com/content/www/us/en/download/17881/) 7.14.2.135 on
+      this device: it has no CLI, only a GUI, so it does not meet this project's CLI requirement.
+      Uninstalled again; see EVALUATION.md. Not pursued further.
 - [ ] E5 Note which power tools are active (for example Intel IPF/DTT, vendor tools); they may
       override PL1/PL2.
 - [ ] E6 Build with `RaplEnableMmioRead=1`, test-sign, collect the MCHBAR evidence (template

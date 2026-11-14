@@ -113,7 +113,13 @@ Caveats specific to an OEM laptop such as this device:
   as supported but the laptop vendor's BIOS/EC may lock or silently revert the limits XTU sets,
   the same behavior this project's own TODO (E5) already flags for Intel IPF and vendor power
   tools.
-- Not tested on this device as part of this project; try it, but do not assume it bypasses the
-  vendor firmware's own power policy. If XTU proves reliable here, prefer it over the evaluation
-  driver in this repository for simply setting PL1/PL2, and keep this project for the use cases
-  XTU does not cover (audit logging, backup/rollback, the watchdog service).
+
+**Tested on this device (2026-11-14):** downloaded `XTUSetup_7.14.2.135.exe` directly from
+`downloadmirror.intel.com` (SHA-512 matched Intel's download page exactly) and ran a silent
+install (`/quiet /norestart`, exit code 3010 = success, reboot pending). Result: **this build
+ships no command-line tool at all**, only `XtuUiLauncher.exe` and `PerfTune.exe` (both GUI). The
+`XtuCli.exe -t PL1 -v <watt>` syntax referenced in earlier research for this document does not
+exist in the current release and should be treated as wrong. Since this project's requirement is
+a scriptable CLI, XTU does not meet it, and was uninstalled again (`/uninstall /quiet /norestart`,
+exit code 0, no leftover files) without rebooting. Conclusion: stay with this repository's own
+driver and CLI; XTU is not a substitute here.
