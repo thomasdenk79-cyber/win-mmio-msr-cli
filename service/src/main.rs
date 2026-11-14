@@ -100,12 +100,7 @@ fn parse_config(args: &[String]) -> Result<Config, String> {
     };
     let pl1 = watts("--pl1", PROCESSOR_BASE_WATTS)?;
     let pl2 = watts("--pl2", MAX_TURBO_WATTS)?;
-    if pl1 > PROCESSOR_BASE_WATTS {
-        return Err(format!(
-            "The watchdog never sets PL1 above the {PROCESSOR_BASE_WATTS} W processor base power"
-        ));
-    }
-    validate_limits(pl1, pl2, false)?;
+    validate_limits(pl1, pl2)?;
     Ok(Config {
         bridge: path("--bridge")?,
         audit_log: path("--audit-log")?,
@@ -251,7 +246,7 @@ impl Watchdog {
         backend: &mut dyn HardwareBackend,
         now: Instant,
     ) -> Result<Tick, Fault> {
-        let plan = build_plan(backend, config.pl1, config.pl2, false).map_err(Fault::Error)?;
+        let plan = build_plan(backend, config.pl1, config.pl2).map_err(Fault::Error)?;
         if plan.already_applied() {
             return Ok(Tick::InSync);
         }
@@ -597,8 +592,10 @@ mod tests {
         );
         assert_eq!((custom.pl1, custom.pl2), (45, 100));
         assert!(describe(&custom).contains("\npl1_w=45\npl2_w=100\ninterval_ms=1000\n"));
+        let sustained = config(&dir, &["--pl1", "120", "--pl2", "157"]);
+        assert_eq!((sustained.pl1, sustained.pl2), (120, 157));
         for extra in [
-            &["--pl1", "56"][..],
+            &["--pl1", "160"][..],
             &["--pl1", "50", "--pl2", "45"],
             &["--pl2", "158"],
             &["--pl1", "-5"],

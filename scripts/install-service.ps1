@@ -33,7 +33,7 @@ param(
     [string]$SourceDir,
     [string]$AuditLog = (Join-Path $env:ProgramData 'WinMmioMsr\rapl-audit.jsonl'),
     [string]$BackupDir = (Join-Path $env:ProgramData 'WinMmioMsr\backups'),
-    [ValidateRange(5, 55)][int]$Pl1 = 55,
+    [ValidateRange(5, 157)][int]$Pl1 = 55,
     [ValidateRange(5, 157)][int]$Pl2 = 157,
     [ValidateRange(1000, 3600000)][int]$IntervalMs = 5000,
     [ValidateRange(1, 60)][int]$MaxCorrectionsPerHour = 6,

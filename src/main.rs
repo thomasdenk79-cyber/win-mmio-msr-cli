@@ -80,18 +80,15 @@ enum Preset {
 
 #[derive(Args, Debug)]
 struct Limits {
-    #[arg(long, required_unless_present = "preset", conflicts_with = "preset", value_parser = clap::value_parser!(u16).range(i64::from(MIN_WATTS)..=i64::from(MAX_TURBO_WATTS)), help = "PL1 in watts")]
+    #[arg(long, help = "PL1 in watts (5 to 157, at most PL2)", required_unless_present = "preset", conflicts_with = "preset", value_parser = clap::value_parser!(u16).range(i64::from(MIN_WATTS)..=i64::from(MAX_TURBO_WATTS)))]
     pl1: Option<u16>,
     #[arg(long, required_unless_present = "preset", conflicts_with = "preset", value_parser = clap::value_parser!(u16).range(i64::from(MIN_WATTS)..=i64::from(MAX_TURBO_WATTS)), help = "PL2 in watts, at least PL1")]
     pl2: Option<u16>,
-    #[arg(
-        long,
-        value_enum,
-        help = "base=55/157 W; turbo=157/157 W (explicit opt-in)"
-    )]
+    #[arg(long, value_enum, help = "base=55/157 W; turbo=157/157 W")]
     preset: Option<Preset>,
-    #[arg(long, help = "Explicitly allow PL1 above 55 W")]
-    allow_sustained_above_base: bool,
+    /// Accepted for compatibility with older scripts; PL1 needs no extra consent.
+    #[arg(long = "allow-sustained-above-base", hide = true)]
+    _allow_sustained_above_base: bool,
 }
 
 impl Limits {
@@ -104,7 +101,7 @@ impl Limits {
                 self.pl2.ok_or("--pl2 is missing")?,
             ),
         };
-        validate_limits(pair.0, pair.1, self.allow_sustained_above_base)?;
+        validate_limits(pair.0, pair.1)?;
         Ok(pair)
     }
 }
@@ -225,7 +222,7 @@ fn execute(cli: &Cli, color: bool) -> Result<String, String> {
             // Validate all policy arguments before starting any bridge process.
             let (pl1, pl2) = limits.values()?;
             let mut device = backend(connection, None)?;
-            let plan = build_plan(device.as_mut(), pl1, pl2, limits.allow_sustained_above_base)?;
+            let plan = build_plan(device.as_mut(), pl1, pl2)?;
             if cli.json {
                 return Ok(envelope("plan", json!({"plan": output::plan_json(&plan)})));
             }
@@ -247,7 +244,7 @@ fn execute(cli: &Cli, color: bool) -> Result<String, String> {
             }
             let audit = audit_log.as_ref().map(|log| (log, reason.as_str()));
             let mut device = backend(connection, audit)?;
-            let plan = build_plan(device.as_mut(), pl1, pl2, limits.allow_sustained_above_base)?;
+            let plan = build_plan(device.as_mut(), pl1, pl2)?;
             if plan.already_applied() && plan.blockers().is_empty() {
                 if cli.json {
                     return Ok(envelope(
@@ -403,18 +400,20 @@ mod tests {
 
     #[test]
     fn rejects_policy_violations_before_hardware_access() {
-        let error = run(&["plan", "--mock", "--pl1", "60", "--pl2", "157"]).unwrap_err();
-        assert!(error.contains("--allow-sustained-above-base"), "{error}");
+        assert!(run(&["plan", "--mock", "--pl1", "60", "--pl2", "157"]).is_ok());
+        assert!(run(&["plan", "--mock", "--pl1", "120", "--pl2", "150"]).is_ok());
         assert!(run(&[
             "plan",
             "--mock",
             "--pl1",
-            "100",
-            "--pl2",
             "90",
+            "--pl2",
+            "157",
             "--allow-sustained-above-base"
         ])
-        .is_err());
+        .is_ok());
+        let error = run(&["plan", "--mock", "--pl1", "100", "--pl2", "90"]).unwrap_err();
+        assert!(error.contains("PL1 <= PL2"), "{error}");
         assert!(run(&["plan", "--mock", "--pl1", "4", "--pl2", "90"]).is_err());
     }
 

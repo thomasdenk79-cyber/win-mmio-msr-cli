@@ -7,9 +7,10 @@ End-to-end smoke test of win-mmio-msr-cli with the simulation backend.
 Runs status, plan, apply and the audit viewer with --mock and checks the JSON
 and CSV output, including the PL1/PL2 before and set watt columns and the
 MMIO-then-MSR write order. It also checks that an apply of the current limits
-writes nothing and that the CLI refuses unsafe requests: a PL1 above the
-processor base power without consent, PL1 above PL2, an apply without --yes,
-an existing backup file and --csv together with --json.
+writes nothing, that any PL1/PL2 pair within the register range is accepted
+without extra consent and that the CLI refuses invalid requests: PL2 above
+157 W, PL1 above PL2, an apply without --yes, an existing backup file and --csv
+together with --json.
 
 All files go to a new temporary folder that is removed afterwards. The test
 needs no driver, no administrator rights and no hardware access.
@@ -113,8 +114,13 @@ try {
     Assert-That ($result.changed -eq $false) 'apply of the current limits changed registers'
     Assert-That (-not (Test-Path -LiteralPath $noop)) 'apply of the current limits created a backup'
 
-    Write-Host '--- 6. unsafe requests are refused'
-    Assert-Refused 'PL1 above 55 W without --allow-sustained-above-base' @('plan', '--mock', '--pl1', '60', '--pl2', '157')
+    Write-Host '--- 6. free PL1/PL2 choice; invalid requests are refused'
+    $free = (Invoke-Cli @('--json', 'plan', '--mock', '--pl1', '120', '--pl2', '150') | ConvertFrom-Json).plan
+    foreach ($change in @($free.changes)) {
+        Assert-That ($change.pl1_set_w -eq 120 -and $change.pl2_set_w -eq 150) "$($change.register): free limits $($change.pl1_set_w)/$($change.pl2_set_w) W"
+    }
+    Write-Host 'ok  accepted: PL1 120 W / PL2 150 W without extra flags'
+    Assert-Refused 'PL2 above 157 W' @('plan', '--mock', '--pl1', '60', '--pl2', '158')
     Assert-Refused 'PL1 above PL2' @('plan', '--mock', '--pl1', '50', '--pl2', '40')
     Assert-Refused 'apply without --yes' @('apply', '--mock', '--pl1', '50', '--pl2', '120', '--backup', (Join-Path $Work 'unused.txt'))
     Assert-Refused 'apply onto an existing backup file' @('apply', '--mock', '--pl1', '50', '--pl2', '120', '--yes', '--backup', $backup)

@@ -10,22 +10,12 @@ pub const PROCESSOR_BASE_WATTS: u16 = 55;
 /// Intel maximum turbo power of the i9-13950HX.
 pub const MAX_TURBO_WATTS: u16 = 157;
 
-/// Request-level check: `MIN_WATTS <= PL1 <= PL2 <= MAX_TURBO_WATTS`; PL1 above the
-/// processor base power needs an explicit acknowledgment.
-pub fn validate_limits(
-    pl1_watts: u16,
-    pl2_watts: u16,
-    allow_sustained_above_base: bool,
-) -> Result<(), String> {
+/// Request-level check: `MIN_WATTS <= PL1 <= PL2 <= MAX_TURBO_WATTS`. Any PL1 and PL2 in
+/// this range is accepted, including a sustained PL1 above the processor base power.
+pub fn validate_limits(pl1_watts: u16, pl2_watts: u16) -> Result<(), String> {
     if pl1_watts < MIN_WATTS || pl2_watts > MAX_TURBO_WATTS || pl2_watts < pl1_watts {
         return Err(format!(
             "Use {MIN_WATTS} <= PL1 <= PL2 <= {MAX_TURBO_WATTS} W (got PL1 {pl1_watts} W, PL2 {pl2_watts} W)"
-        ));
-    }
-    if pl1_watts > PROCESSOR_BASE_WATTS && !allow_sustained_above_base {
-        return Err(format!(
-            "PL1={pl1_watts} W exceeds Intel's {PROCESSOR_BASE_WATTS} W processor base power. \
-             Provide --allow-sustained-above-base to acknowledge this."
         ));
     }
     Ok(())
@@ -92,12 +82,12 @@ mod tests {
 
     #[test]
     fn validates_limits_in_one_place() {
-        assert!(validate_limits(55, 157, false).is_ok());
-        assert!(validate_limits(4, 157, false).is_err());
-        assert!(validate_limits(60, 50, true).is_err());
-        assert!(validate_limits(55, 158, false).is_err());
-        assert!(validate_limits(56, 157, false).is_err());
-        assert!(validate_limits(157, 157, true).is_ok());
+        assert!(validate_limits(55, 157).is_ok());
+        assert!(validate_limits(56, 157).is_ok());
+        assert!(validate_limits(157, 157).is_ok());
+        assert!(validate_limits(4, 157).is_err());
+        assert!(validate_limits(60, 50).is_err());
+        assert!(validate_limits(55, 158).is_err());
     }
 
     #[test]

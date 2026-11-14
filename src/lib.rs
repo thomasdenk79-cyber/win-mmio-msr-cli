@@ -179,9 +179,8 @@ pub fn build_plan(
     backend: &mut dyn HardwareBackend,
     pl1_watts: u16,
     pl2_watts: u16,
-    allow_sustained_above_base: bool,
 ) -> Result<Plan, String> {
-    validate_limits(pl1_watts, pl2_watts, allow_sustained_above_base)?;
+    validate_limits(pl1_watts, pl2_watts)?;
     let before = read_snapshot(backend)?;
     let after_msr = with_power_limits(before.msr, before.units, pl1_watts, pl2_watts)
         .map_err(|e| format!("MSR 0x610: {e}"))?;
@@ -438,7 +437,7 @@ mod tests {
     #[test]
     fn plan_reports_watt_columns_in_write_order() {
         let mut dev = MockBackend::default();
-        let plan = build_plan(&mut dev, 100, 157, true).unwrap();
+        let plan = build_plan(&mut dev, 100, 157).unwrap();
         let changes = plan.changes();
         assert_eq!(changes.len(), 2);
         assert_eq!(changes[0].register, REGISTER_MMIO_PKG_LIMIT);
@@ -450,15 +449,13 @@ mod tests {
             assert_eq!(change.watts.pl2_set_w, 157.0);
         }
         assert!(!plan.already_applied());
-        assert!(build_plan(&mut dev, 55, 157, false)
-            .unwrap()
-            .already_applied());
+        assert!(build_plan(&mut dev, 55, 157).unwrap().already_applied());
     }
 
     #[test]
     fn mock_plan_and_apply() {
         let mut dev = MockBackend::default();
-        let plan = build_plan(&mut dev, 50, 120, false).unwrap();
+        let plan = build_plan(&mut dev, 50, 120).unwrap();
         let path = temp("apply.txt");
         let result = apply(&mut dev, &plan, &path).unwrap();
         assert_eq!(result.msr, plan.after_msr);
@@ -467,7 +464,7 @@ mod tests {
         assert!(contents.starts_with("WIN_MMIO_MSR_BACKUP_V2\n"));
         assert!(contents.contains("\nmsr_0x610_pl1_w=55\n"));
         assert!(contents.contains("\ntarget_pl2_w=120\n"));
-        let again = build_plan(&mut dev, 55, 157, false).unwrap();
+        let again = build_plan(&mut dev, 55, 157).unwrap();
         let error = apply(&mut dev, &again, &path).unwrap_err();
         assert!(error.contains("Cannot create new backup"), "{error}");
         assert_eq!(dev.msr, plan.after_msr, "no write without a new backup");
@@ -475,10 +472,12 @@ mod tests {
     }
 
     #[test]
-    fn sustained_pl1_needs_explicit_acknowledgment() {
+    fn any_pl1_pl2_within_the_register_range_is_accepted() {
         let mut dev = MockBackend::default();
-        assert!(build_plan(&mut dev, 157, 157, false).is_err());
-        assert!(build_plan(&mut dev, 157, 157, true).is_ok());
+        assert!(build_plan(&mut dev, 157, 157).is_ok());
+        assert!(build_plan(&mut dev, 90, 140).is_ok());
+        assert!(build_plan(&mut dev, 100, 90).is_err());
+        assert!(build_plan(&mut dev, 50, 158).is_err());
     }
 
     #[test]
@@ -486,11 +485,11 @@ mod tests {
         let mut dev = MockBackend::default();
         let units = Units::decode(dev.units);
         dev.msr = with_power_limits(dev.msr, units, 55, 200).unwrap();
-        let plan = build_plan(&mut dev, 45, 100, false).unwrap();
+        let plan = build_plan(&mut dev, 45, 100).unwrap();
         assert!(plan.blockers().is_empty(), "{:?}", plan.blockers());
         assert_eq!(plan.warnings().len(), 1, "{:?}", plan.warnings());
         assert!(plan.warnings()[0].starts_with(REGISTER_MSR_PKG_LIMIT));
-        assert!(build_plan(&mut MockBackend::default(), 45, 100, false)
+        assert!(build_plan(&mut MockBackend::default(), 45, 100)
             .unwrap()
             .warnings()
             .is_empty());
@@ -503,7 +502,7 @@ mod tests {
         dev.mmio_verified = false;
         let snapshot = read_snapshot(&mut dev).unwrap();
         assert_eq!(snapshot.mmio, None);
-        let plan = build_plan(&mut dev, 50, 157, false).unwrap();
+        let plan = build_plan(&mut dev, 50, 157).unwrap();
         assert_eq!(plan.changes().len(), 1);
         assert_eq!(plan.blockers().len(), 2);
         assert!(!plan.already_applied());
@@ -518,7 +517,7 @@ mod tests {
         let mut dev = MockBackend::default();
         dev.live_writes_enabled = false;
         let before = dev.msr;
-        let plan = build_plan(&mut dev, 50, 157, false).unwrap();
+        let plan = build_plan(&mut dev, 50, 157).unwrap();
         assert_eq!(plan.blockers().len(), 1);
         assert!(apply(&mut dev, &plan, &temp("readonly.txt")).is_err());
         assert_eq!(dev.msr, before);
@@ -527,7 +526,7 @@ mod tests {
     #[test]
     fn detects_race_between_plan_and_apply() {
         let mut dev = MockBackend::default();
-        let plan = build_plan(&mut dev, 50, 157, false).unwrap();
+        let plan = build_plan(&mut dev, 50, 157).unwrap();
         dev.msr ^= 1 << 20;
         let path = temp("race.txt");
         let error = apply(&mut dev, &plan, &path).unwrap_err();
@@ -542,7 +541,7 @@ mod tests {
             MockBackend::default().with_audit_log(Some(log.clone()), Some("unit test".into()));
         let old_msr = dev.msr;
         let old_mmio = dev.mmio;
-        let plan = build_plan(&mut dev, 100, 157, true).unwrap();
+        let plan = build_plan(&mut dev, 100, 157).unwrap();
         dev.fail_next_msr_write = true;
         let path = temp("rollback.txt");
         let error = apply(&mut dev, &plan, &path).unwrap_err();
