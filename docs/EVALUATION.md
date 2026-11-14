@@ -18,6 +18,27 @@ items are in [TODO.md](TODO.md); the full report structure is in
 | Test signing | off before the evaluation |
 | VBS / HVCI | running / on (security services 1, 2, 7) |
 | Vulnerable driver blocklist | enabled |
+
+## Attestation signing: a registered business changes the signing route
+
+Earlier parts of this document assumed Microsoft attestation signing was "not available" because
+it requires an organization. The owner has a registered trade (`Gewerbeanmeldung`) for a solar PV
+installation (being below the Berufsgenossenschaft membership threshold does not invalidate the
+registration itself), separate from unrelated, non-trade-registered agricultural income. A
+registered sole-proprietor trade is sufficient for Microsoft's Hardware Developer Program; it does
+not need to relate to software and does not need a Handelsregister entry.
+
+What this unlocks: attestation signing needs only (1) a free Microsoft Entra ID tenant with the
+owner as global administrator, (2) the owner as legal contact, and (3) an EV code signing
+certificate issued in the exact legal/trade name from the `Gewerbeanmeldung` (around EUR 330-360
+per year, for example via Certum; requires the trade registration extract, a tax-office
+confirmation, photo ID and a callback verification). Registration with Microsoft itself and
+attestation signing per submission are free. Once approved, the signed driver needs no permanent
+test-signing mode and no "Test Mode" desktop watermark, and loads normally even with HVCI on.
+
+This is the preferred long-term signing route over the evaluation test-signing script; it replaces
+TODO item R1. Not started: still need the trade registration document, the EV certificate order,
+and the Partner Center registration.
 | Management | MDM-managed, several active WDAC / Code Integrity policies |
 | Power tools | Intel Innovation Platform Framework (`ipfsvc`) and the vendor power utility were running; both may override PL1/PL2 |
 

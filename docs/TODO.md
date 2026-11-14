@@ -42,8 +42,12 @@ validation report (copy of [VALIDATION_REPORT_TEMPLATE.md](VALIDATION_REPORT_TEM
 
 ## Release
 
-- [ ] R1 Microsoft attestation signing (Partner Center account and EV certificate required; not
-      available yet).
+- [ ] R1 Microsoft attestation signing via the owner's registered solar-PV trade
+      (`Gewerbeanmeldung`); see EVALUATION.md "Attestation signing" section. Steps: confirm the
+      trade registration document and exact legal name, order an EV code signing certificate in
+      that name, create a free Microsoft Entra ID tenant (owner as global admin), register for the
+      free Hardware Developer Program, upload the EV certificate, submit the driver as a CAB for
+      attestation signing. Preferred over keeping test signing permanently.
 - [ ] R2 Replace `HalGetBusDataByOffset` with a PnP filter on the host bridge.
 - [ ] R3 Installer uninstall switch.
 - [ ] R4 Reviewed `docs/VALIDATION_REPORT.md`; only then any readiness claim.
