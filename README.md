@@ -4,6 +4,15 @@ A fail-closed Windows toolchain that reads and, after independent hardware valid
 
 > **Status: not hardware-ready.** The driver is unsigned, the MCHBAR layout is not validated on the target machine and live writes are disabled at build time. Use `--mock` until the gates in [driver/README.md](driver/README.md) are closed and a [validation report](docs/VALIDATION_REPORT_TEMPLATE.md) is complete.
 
+## Sponsor the driver signing certificate
+
+Loading this driver outside test-signing mode needs Microsoft attestation signing, which needs an
+EV code signing certificate (roughly EUR 330-360 for one year, one-time; see
+[docs/EVALUATION.md](docs/EVALUATION.md) "Attestation signing"). The owner is looking for a sponsor
+to cover this one-time cost. Once the certificate is obtained and the driver is signed, the
+signature stays valid indefinitely, even if the certificate is not renewed afterward. If you can
+help, please open an issue or contact the owner.
+
 ## Components
 
 | Folder (crate) | Binary | Role |

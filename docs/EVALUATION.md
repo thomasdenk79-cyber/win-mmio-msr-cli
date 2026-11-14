@@ -73,6 +73,24 @@ since it matches the actual activity, and the ordinary outcome -- trying it, fin
 or the effort not worthwhile against established competitors (ThrottleStop, Intel XTU), and
 deregistering again -- is a completely normal small-business lifecycle, not a pretext.
 
+What the EV certificate and attestation signing do and do not check: the certificate authority only
+verifies the owner's identity/trade, not the driver's content, and can be reused to sign any number
+of files/driver versions during its one-year term, not just one submission. Microsoft's attestation
+signing is likewise automated (malware scan, package format and signature checks) with no manual
+code review -- it does not evaluate what the driver actually does. Both steps are expected to
+succeed without scrutinizing this project's MSR/MMIO write capability.
+
+Open risk not covered by signing itself: Microsoft separately maintains the "vulnerable driver
+blocklist" (already recorded as enabled on the target device, see the table above), active by
+default since Windows 11 22H2 wherever HVCI/Smart App Control/S mode is on. It specifically targets
+drivers offering raw MSR or physical-memory read/write, the classic "Bring Your Own Vulnerable
+Driver" (BYOVD) attack primitive -- which is exactly this project's register access pattern. A
+driver can be attestation-signed successfully and still be added to this blocklist later, which
+would stop it loading regardless of the certificate's validity; the fixed register whitelist and
+compare-and-write design (see ARCHITECTURE.md) reduce but do not eliminate this risk, since there is
+no guarantee against future reclassification. This is an unresolved, unmitigatable-by-signing risk
+to flag before relying on attestation signing as a permanent solution.
+
 Order of operations: register this trade -> obtain the EV certificate using the `Gewerbeschein` ->
 register with Microsoft Partner Center and submit this driver for attestation signing -> deregister
 the trade afterward once demand turns out too low to continue; the signed driver keeps working per
