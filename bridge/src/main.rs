@@ -258,7 +258,7 @@ fn open_device() -> windows_sys::Win32::Foundation::HANDLE {
             std::ptr::null(),
             OPEN_EXISTING,
             FILE_ATTRIBUTE_NORMAL,
-            0,
+            std::ptr::null_mut(),
         )
     };
     if h == INVALID_HANDLE_VALUE {
