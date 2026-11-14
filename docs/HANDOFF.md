@@ -13,6 +13,19 @@
 
 The review findings and their status are listed in [ARCHITECTURE_REVIEW.md](ARCHITECTURE_REVIEW.md).
 
+## Evaluation state (paused)
+
+The owner approved evaluation with a test-signed driver on the target device; attestation signing
+is not available. Done: the default read-only driver (all gates off, CI commit `9b8cefd`) was
+test-signed with `scripts\eval-testsign.ps1` (local, non-exportable test certificate),
+registered as kernel service `rapl-pkg` (demand start, not started) and test signing was
+enabled. Pending: reboot, then `sc.exe start rapl-pkg` and a read-only `status`. Rollback:
+`scripts\eval-rollback.ps1` stops and deletes the service, removes
+`System32\drivers\rapl-pkg.sys` and the test certificate (My, Root, TrustedPublisher) and runs
+`bcdedit /set testsigning off`; reboot afterwards. Next steps: [TODO.md](TODO.md); the full
+evaluation route, the recorded device state and the restart procedure after a reinstall are in
+[EVALUATION.md](EVALUATION.md).
+
 ## Build and test
 
 ```powershell
