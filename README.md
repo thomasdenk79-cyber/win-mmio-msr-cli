@@ -104,4 +104,4 @@ Keep the original log and the backups unchanged and hand over read-only copies.
 - [Driver build, signing and gates](driver/README.md)
 - [Watchdog service](docs/SERVICE.md)
 - [Validation test plan](docs/TEST_PLAN.md) and [validation report template](docs/VALIDATION_REPORT_TEMPLATE.md)
-- [Handoff for the Windows hardware work](docs/HANDOFF.md)
+- [Handoff for the Windows hardware work](docs/HANDOFF.md), [evaluation route and open work](docs/EVALUATION.md), [TODO](docs/TODO.md)

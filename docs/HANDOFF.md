@@ -22,7 +22,9 @@ registered as kernel service `rapl-pkg` (demand start, not started) and test sig
 enabled. Pending: reboot, then `sc.exe start rapl-pkg` and a read-only `status`. Rollback:
 `scripts\eval-rollback.ps1` stops and deletes the service, removes
 `System32\drivers\rapl-pkg.sys` and the test certificate (My, Root, TrustedPublisher) and runs
-`bcdedit /set testsigning off`; reboot afterwards. Next steps: [TODO.md](TODO.md).
+`bcdedit /set testsigning off`; reboot afterwards. Next steps: [TODO.md](TODO.md); the full
+evaluation route, the recorded device state and the restart procedure after a reinstall are in
+[EVALUATION.md](EVALUATION.md).
 
 ## Build and test
 

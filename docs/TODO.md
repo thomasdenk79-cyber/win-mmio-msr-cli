@@ -5,11 +5,12 @@ validation report (copy of [VALIDATION_REPORT_TEMPLATE.md](VALIDATION_REPORT_TEM
 
 ## Evaluation on the target device (test signing, owner approval)
 
-- [ ] E1 Record the system identity (template section 1). Collected but not yet in the repo:
-      Secure Boot off, VBS and HVCI on, vulnerable-driver blocklist on, several WDAC policies,
-      MDM-managed device. Keep device identifiers out of the public repo.
+- [x] E1 Record the system identity (template section 1). Captured in
+      [EVALUATION.md](EVALUATION.md); re-record after the reinstall. Device identifiers stay out of
+      the public repo.
 - [x] E2 Test-sign and register the default read-only driver with
       [scripts/eval-testsign.ps1](../scripts/eval-testsign.ps1) (done 2026-11-14, CI build `9b8cefd`).
+      Lost by the planned reinstall; repeat per [EVALUATION.md](EVALUATION.md).
 - [ ] E2a Owner reboots the test device so that test signing takes effect.
 - [ ] E3 `sc.exe start rapl-pkg`; `win-mmio-msr-cli status --bridge <eval dir>\rapl-bridge.exe`.
       Evidence: output, `sc.exe query rapl-pkg`, Code Integrity events (Microsoft-Windows-CodeIntegrity/Operational).
