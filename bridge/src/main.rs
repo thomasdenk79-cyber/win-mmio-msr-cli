@@ -1,8 +1,7 @@
 #![cfg_attr(not(windows), allow(dead_code))]
-use std::{
-    env,
-    io::{self, Write},
-};
+#[cfg(windows)]
+use std::env;
+use std::io::{self, Write};
 
 const DEVICE: &str = r"\\.\RaplPkg";
 const fn ctl(function: u32, access: u32) -> u32 {
@@ -143,6 +142,49 @@ fn main() {
     unsafe {
         windows_sys::Win32::Foundation::CloseHandle(handle);
     }
+}
+
+#[cfg(windows)]
+fn processor_name() -> String {
+    use windows_sys::Win32::{
+        Foundation::ERROR_SUCCESS,
+        System::Registry::{RegGetValueW, HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ},
+    };
+    let key: Vec<u16> = "HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0\0"
+        .encode_utf16()
+        .collect();
+    let value: Vec<u16> = "ProcessorNameString"
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    let mut bytes = vec![0u8; 512];
+    let mut size = bytes.len() as u32;
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_LOCAL_MACHINE,
+            key.as_ptr(),
+            value.as_ptr(),
+            RRF_RT_REG_SZ,
+            std::ptr::null_mut(),
+            bytes.as_mut_ptr() as *mut _,
+            &mut size,
+        )
+    };
+    if status != ERROR_SUCCESS || size < 2 {
+        return "unknown".into();
+    }
+    let wide = unsafe {
+        std::slice::from_raw_parts(
+            bytes.as_ptr() as *const u16,
+            (size as usize / 2).saturating_sub(1),
+        )
+    };
+    let text = String::from_utf16_lossy(wide);
+    text.chars()
+        .filter(|c| !c.is_control())
+        .collect::<String>()
+        .trim()
+        .to_string()
 }
 
 #[cfg(windows)]
