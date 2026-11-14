@@ -5,9 +5,12 @@ validation report (copy of [VALIDATION_REPORT_TEMPLATE.md](VALIDATION_REPORT_TEM
 
 ## Evaluation on the target device (test signing, owner approval)
 
-- [ ] E1 Record the system identity (template section 1).
-- [ ] E2 Test-sign and register the default read-only driver with
-      a test-signing script (planned: `scripts/eval-testsign.ps1`, see HANDOFF); reboot.
+- [ ] E1 Record the system identity (template section 1). Collected but not yet in the repo:
+      Secure Boot off, VBS and HVCI on, vulnerable-driver blocklist on, several WDAC policies,
+      MDM-managed device. Keep device identifiers out of the public repo.
+- [x] E2 Test-sign and register the default read-only driver with
+      [scripts/eval-testsign.ps1](../scripts/eval-testsign.ps1) (done 2026-11-14, CI build `9b8cefd`).
+- [ ] E2a Owner reboots the test device so that test signing takes effect.
 - [ ] E3 `sc.exe start rapl-pkg`; `win-mmio-msr-cli status --bridge <eval dir>\rapl-bridge.exe`.
       Evidence: output, `sc.exe query rapl-pkg`, Code Integrity events (Microsoft-Windows-CodeIntegrity/Operational).
 - [ ] E4 Compare MSR `0x606`/`0x610` three times with HWiNFO or ThrottleStop (template section 4).
@@ -20,8 +23,18 @@ validation report (copy of [VALIDATION_REPORT_TEMPLATE.md](VALIDATION_REPORT_TEM
       change with `--audit-log`, check readback, rollback and audit records (template section 5–6).
 - [ ] E9 Watchdog with a low correction budget (template section 7).
 - [ ] E10 Thermal and stability run, WHEA check (template section 8).
-- [ ] E11 Remove the evaluation setup with the rollback script (planned: `scripts/eval-rollback.ps1`)
+- [ ] E11 Remove the evaluation setup with [scripts/eval-rollback.ps1](../scripts/eval-rollback.ps1)
       when evaluation ends; reboot.
+
+## Open questions
+
+- [ ] Q1 Does HVCI or a WDAC policy on the device block the test-signed driver? Answered by E3.
+- [ ] Q2 How do existing tools such as ThrottleStop reach MSR and MCHBAR, and which signing route do
+      they use? Document in ARCHITECTURE_REVIEW.md as a comparison.
+
+## Repository
+
+- [ ] P1 Review and merge the PR for branch `eval/test-signing` (git process minimal).
 
 ## Release
 

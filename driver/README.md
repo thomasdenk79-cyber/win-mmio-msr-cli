@@ -66,6 +66,12 @@ through the Partner Center with an EV code signing certificate. This project doe
 signed driver. Do not disable Secure Boot, memory integrity or driver signature enforcement to
 load an unsigned build.
 
+Exception for owner-approved evaluation on a single test device: `scripts\eval-testsign.ps1`
+test-signs the driver with a local, non-exportable certificate, registers the service and enables
+test signing (`bcdedit /set testsigning on`, reboot required). Secure Boot must already be off
+for test signing to take effect; the script does not change Secure Boot, HVCI or WDAC. Remove the
+setup with `scripts\eval-rollback.ps1`. Never use this route on production or shared machines.
+
 ## Install and remove (signed and validated builds only)
 
 ```powershell
