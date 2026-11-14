@@ -38,6 +38,9 @@ jobs:
         run: cargo test --workspace --all-targets --locked
       - name: MSVC release build (CLI, bridge, service)
         run: cargo build --workspace --release --locked --target x86_64-pc-windows-msvc
+      - name: Service smoke test (real SCM, installer, no driver)
+        shell: powershell
+        run: ./.github/scripts/service-smoke.ps1 -BinaryDir target/x86_64-pc-windows-msvc/release
       - name: Upload user-mode binaries
         uses: actions/upload-artifact@v4
         with:
