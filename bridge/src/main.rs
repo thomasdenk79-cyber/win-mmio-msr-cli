@@ -116,6 +116,21 @@ fn main() {
             let value = args.next().unwrap_or_else(|| fail("missing value"));
             let id = check_register(&command, parse_hex(&address));
             let requested = parse_hex(&value);
+            let current: Response = ioctl(
+                handle,
+                if command == "msr-write" {
+                    IOCTL_READ_MSR
+                } else {
+                    IOCTL_READ_MMIO
+                },
+                &Request {
+                    size: std::mem::size_of::<Request>() as u32,
+                    version: VERSION,
+                    register_id: id,
+                    ..Default::default()
+                },
+            );
+            check_response(current, id);
             let r: Response = ioctl(
                 handle,
                 if command == "msr-write" {
@@ -127,6 +142,7 @@ fn main() {
                     size: std::mem::size_of::<Request>() as u32,
                     version: VERSION,
                     register_id: id,
+                    expected: current.value,
                     value: requested,
                     ..Default::default()
                 },
