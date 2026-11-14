@@ -1,0 +1,53 @@
+#pragma once
+#include <ntddk.h>
+
+#define RAPL_DEVICE_TYPE 0x00008010
+#define RAPL_IOCTL_BASE  0x800
+#define RAPL_PROTOCOL_VERSION 1
+#define RAPL_MSR_UNIT 0x606u
+#define RAPL_MSR_PACKAGE_LIMIT 0x610u
+#define RAPL_MMIO_PACKAGE_LIMIT 0x59A0u
+
+typedef enum _RAPL_REGISTER_ID {
+    RaplRegisterUnits = 1,
+    RaplRegisterPackageLimit = 2,
+    RaplRegisterMmioPackageLimit = 3
+} RAPL_REGISTER_ID;
+
+typedef struct _RAPL_REQUEST {
+    ULONG Size;
+    ULONG Version;
+    ULONG RegisterId;
+    ULONG Reserved;
+    ULONGLONG ExpectedValue;
+    ULONGLONG Value;
+} RAPL_REQUEST;
+
+typedef struct _RAPL_RESPONSE {
+    ULONG Size;
+    ULONG Version;
+    ULONG RegisterId;
+    ULONG Flags;
+    ULONGLONG Value;
+} RAPL_RESPONSE;
+
+typedef struct _RAPL_INFO {
+    ULONG Size;
+    ULONG Version;
+    ULONG Vendor;
+    ULONG Family;
+    ULONG Model;
+    ULONG Stepping;
+    ULONG Flags;
+    ULONG PackageCount;
+    ULONG Reserved;
+} RAPL_INFO;
+
+#define RAPL_FLAG_MMIO_VERIFIED 0x00000001u
+#define RAPL_FLAG_READ_ONLY    0x00000002u
+
+#define IOCTL_RAPL_GET_INFO CTL_CODE(RAPL_DEVICE_TYPE, RAPL_IOCTL_BASE + 0, METHOD_BUFFERED, FILE_READ_DATA)
+#define IOCTL_RAPL_READ_MSR CTL_CODE(RAPL_DEVICE_TYPE, RAPL_IOCTL_BASE + 1, METHOD_BUFFERED, FILE_READ_DATA)
+#define IOCTL_RAPL_READ_MMIO CTL_CODE(RAPL_DEVICE_TYPE, RAPL_IOCTL_BASE + 2, METHOD_BUFFERED, FILE_READ_DATA)
+#define IOCTL_RAPL_WRITE_MSR CTL_CODE(RAPL_DEVICE_TYPE, RAPL_IOCTL_BASE + 3, METHOD_BUFFERED, FILE_WRITE_DATA)
+#define IOCTL_RAPL_WRITE_MMIO CTL_CODE(RAPL_DEVICE_TYPE, RAPL_IOCTL_BASE + 4, METHOD_BUFFERED, FILE_WRITE_DATA)
