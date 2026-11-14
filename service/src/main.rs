@@ -105,7 +105,7 @@ fn backup_name(dir: &Path) -> PathBuf {
 
 fn tick(config: &Config) -> Result<bool, String> {
     let bridge = ExternalBridge::with_timeout(config.bridge.clone(), Duration::from_secs(10))?
-        .with_audit_log(Some(config.audit_log.clone()));
+        .with_audit_log(Some(config.audit_log.clone())).with_audit_reason(Some("watchdog_correction".into()));
     let mut backend: Box<dyn win_mmio_msr_cli::backend::HardwareBackend> = Box::new(bridge);
     let plan = build_plan(backend.as_mut(), config.pl1, config.pl2, false)?;
     if power_fields_equal(plan.before().msr, plan.targets().0)

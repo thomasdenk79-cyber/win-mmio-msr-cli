@@ -28,6 +28,7 @@ pub struct ExternalBridge {
     path: PathBuf,
     timeout: Duration,
     audit_log: Option<PathBuf>,
+    audit_reason: Option<String>,
 }
 
 impl ExternalBridge {
@@ -58,6 +59,7 @@ impl ExternalBridge {
             path: full,
             timeout,
             audit_log: None,
+            audit_reason: None,
         })
     }
 
@@ -66,8 +68,19 @@ impl ExternalBridge {
         self
     }
 
+    pub fn with_audit_reason(mut self, reason: Option<String>) -> Self {
+        self.audit_reason = reason;
+        self
+    }
+
     fn call(&self, args: &[&str]) -> Result<String, String> {
-        run_process(&self.path, args, self.timeout, self.audit_log.as_deref())
+        run_process(
+            &self.path,
+            args,
+            self.timeout,
+            self.audit_log.as_deref(),
+            self.audit_reason.as_deref(),
+        )
     }
 
     fn read_hex(&self, args: &[&str]) -> Result<u64, String> {
@@ -119,11 +132,15 @@ fn run_process(
     args: &[&str],
     timeout: Duration,
     audit_log: Option<&std::path::Path>,
+    audit_reason: Option<&str>,
 ) -> Result<String, String> {
     let mut command = Command::new(path);
     command.args(args);
     if let Some(log) = audit_log {
         command.env("RAPL_AUDIT_LOG", log);
+    }
+    if let Some(reason) = audit_reason {
+        command.env("RAPL_AUDIT_REASON", reason);
     }
     let mut child = command
         .stdin(Stdio::null())
