@@ -94,3 +94,7 @@ win-mmio-msr-cli completions powershell > $PROFILE.CurrentUserAllHosts
 ```
 
 JSON besitzt `schema_version: 1`, `ok`, `command` und strukturierte Rohwerte/decoded limits. `apply` erstellt ausschließlich neue Backups und führt nach jedem Schreibvorgang einen exakten Readback durch.
+
+## Bridge- und Treiberquellcode
+
+Die Architektur und der gemeinsame IOCTL-Vertrag stehen in [docs/BRIDGE_DRIVER_ARCHITECTURE.md](docs/BRIDGE_DRIVER_ARCHITECTURE.md). Der Bridge-Prozess unter `bridge/` akzeptiert nur `0x606`, `0x610` und `0x59A0`; beliebige MSR- oder physische Adressen werden vor dem Treiberzugriff abgelehnt. Der Treiber bleibt standardmäßig read-only, bis der lokale Agent die Hardwarevalidierung und Signaturabnahme dokumentiert.
