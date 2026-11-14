@@ -1,6 +1,6 @@
 #![cfg_attr(not(windows), allow(dead_code, unused_imports))]
 use chrono::{SecondsFormat, Utc};
-use std::{fs::OpenOptions, io::Write, path::PathBuf, time::Duration};
+use std::{fs::OpenOptions, io::Write, path::{Path, PathBuf}, time::Duration};
 use win_mmio_msr_cli::{
     apply, backend::ExternalBridge, build_plan, rapl::power_fields_equal,
 };
@@ -57,7 +57,7 @@ fn parse_config(args: impl IntoIterator<Item = String>) -> Result<Config, String
             other => return Err(format!("unknown service argument: {other}")),
         }
     }
-    if pl1 < 5 || pl1 > 157 || pl2 < pl1 || pl2 > 157 {
+    if !(5..=157).contains(&pl1) || pl2 < pl1 || pl2 > 157 {
         return Err("require 5 <= PL1 <= PL2 <= 157".into());
     }
     if interval < 1000 {
@@ -96,7 +96,7 @@ fn event(log: &PathBuf, kind: &str, fields: serde_json::Value) -> Result<(), Str
     f.sync_all().map_err(|e| e.to_string())
 }
 
-fn backup_name(dir: &PathBuf) -> PathBuf {
+fn backup_name(dir: &Path) -> PathBuf {
     dir.join(format!(
         "rapl-before-{}.txt",
         Utc::now().format("%Y%m%dT%H%M%S%.3fZ")
