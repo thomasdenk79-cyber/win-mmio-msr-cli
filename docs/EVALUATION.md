@@ -39,6 +39,24 @@ test-signing mode and no "Test Mode" desktop watermark, and loads normally even 
 This is the preferred long-term signing route over the evaluation test-signing script; it replaces
 TODO item R1. Not started: still need the trade registration document, the EV certificate order,
 and the Partner Center registration.
+
+Open legal nuance: the owner's farm has no `Gewerbeschein` because a trade serving agriculture as
+an ancillary operation (for example horse boarding) does not require separate trade registration
+under German law and is counted within the agricultural income on the tax assessment
+(`landwirtschaftliche Einkünfte`). The solar PV installation runs as its own trade with its own tax
+number, which is the stronger document for a CA, but whether a tax-office confirmation without a
+formal `Gewerbeschein` certificate is sufficient for EV validation is CA-specific and unverified
+here; ask the chosen CA's support directly with the actual documents before paying.
+
+The owner is in the process of dissolving that trade. This does not block the plan: an EV
+certificate and an active trade registration are only needed at the time of Partner Center
+registration and the one-time attestation-signing submission. Once Microsoft has attestation-signed
+and timestamped the driver, that signature keeps working indefinitely even after the certificate
+expires or is revoked, the trade is dissolved, or the Partner Center account is closed; Windows
+checks the timestamped Microsoft counter-signature, not the owner's ongoing business status. Only
+submitting a new/updated driver afterward would need an active registration again. So the practical
+sequence is: buy a 1-year EV certificate, register, submit and get this driver signed once, then
+dissolve the trade as planned.
 | Management | MDM-managed, several active WDAC / Code Integrity policies |
 | Power tools | Intel Innovation Platform Framework (`ipfsvc`) and the vendor power utility were running; both may override PL1/PL2 |
 
