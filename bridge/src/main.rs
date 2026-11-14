@@ -2,8 +2,18 @@
 use std::io::{self, Write};
 use std::path::PathBuf;
 
-fn audit_event(event: &str, command: &str, register: u32, previous: u64, requested: u64, readback: Option<u64>, outcome: &str) {
-    let Some(path) = std::env::var_os("RAPL_AUDIT_LOG").map(PathBuf::from) else { return; };
+fn audit_event(
+    event: &str,
+    command: &str,
+    register: u32,
+    previous: u64,
+    requested: u64,
+    readback: Option<u64>,
+    outcome: &str,
+) {
+    let Some(path) = std::env::var_os("RAPL_AUDIT_LOG").map(PathBuf::from) else {
+        return;
+    };
     let value = serde_json::json!({
         "timestamp_utc": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
         "event": event, "command": command, "register_id": register,
@@ -12,13 +22,25 @@ fn audit_event(event: &str, command: &str, register: u32, previous: u64, request
         "readback": readback.map(|v| format!("0x{v:016x}")), "outcome": outcome,
         "pid": std::process::id(), "source": "rapl-bridge"
     });
-    let line = serde_json::to_string(&value).unwrap_or_else(|_| "{\"outcome\":\"audit_serialization_error\"}".into());
+    let line = serde_json::to_string(&value)
+        .unwrap_or_else(|_| "{\"outcome\":\"audit_serialization_error\"}".into());
     let result = (|| -> io::Result<()> {
-        if let Some(parent) = path.parent() { std::fs::create_dir_all(parent)?; }
-        let mut file = std::fs::OpenOptions::new().create(true).append(true).open(&path)?;
-        writeln!(file, "{line}")?; file.sync_all()
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)?;
+        writeln!(file, "{line}")?;
+        file.sync_all()
     })();
-    if let Err(error) = result { fail(format!("audit log write failed for {}: {error}", path.display())); }
+    if let Err(error) = result {
+        fail(format!(
+            "audit log write failed for {}: {error}",
+            path.display()
+        ));
+    }
 }
 
 const DEVICE: &str = r"\\.\RaplPkg";
@@ -107,7 +129,16 @@ fn main() {
             if info.version != VERSION || info.size < std::mem::size_of::<Info>() as u32 {
                 fail("driver returned an invalid info structure")
             }
-            println!("protocol=1\nvendor={}\nmodel={}\nmmio_59a0_64bit_verified={}", if info.vendor==0x8086 {"GenuineIntel"} else {"unknown"}, processor_name(), (info.flags&1)!=0);
+            println!(
+                "protocol=1\nvendor={}\nmodel={}\nmmio_59a0_64bit_verified={}",
+                if info.vendor == 0x8086 {
+                    "GenuineIntel"
+                } else {
+                    "unknown"
+                },
+                processor_name(),
+                (info.flags & 1) != 0
+            );
         }
         "msr-read" | "mmio-read" => {
             let address = args.next().unwrap_or_else(|| fail("missing register"));
@@ -150,12 +181,30 @@ fn main() {
             );
             check_response(current, id);
             if current.value == requested {
-                audit_event("write_unchanged", &command, id, current.value, requested, Some(current.value), "no_change");
+                audit_event(
+                    "write_unchanged",
+                    &command,
+                    id,
+                    current.value,
+                    requested,
+                    Some(current.value),
+                    "no_change",
+                );
                 println!("OK");
-                unsafe { windows_sys::Win32::Foundation::CloseHandle(handle); }
+                unsafe {
+                    windows_sys::Win32::Foundation::CloseHandle(handle);
+                }
                 return;
             }
-            audit_event("write_attempt", &command, id, current.value, requested, None, "pending");
+            audit_event(
+                "write_attempt",
+                &command,
+                id,
+                current.value,
+                requested,
+                None,
+                "pending",
+            );
             let r: Response = ioctl(
                 handle,
                 if command == "msr-write" {
@@ -174,10 +223,26 @@ fn main() {
             );
             check_response(r, id);
             if r.value != requested {
-                audit_event("write_result", &command, id, current.value, requested, Some(r.value), "readback_mismatch");
+                audit_event(
+                    "write_result",
+                    &command,
+                    id,
+                    current.value,
+                    requested,
+                    Some(r.value),
+                    "readback_mismatch",
+                );
                 fail("driver write readback did not match")
             };
-            audit_event("write_result", &command, id, current.value, requested, Some(r.value), "changed");
+            audit_event(
+                "write_result",
+                &command,
+                id,
+                current.value,
+                requested,
+                Some(r.value),
+                "changed",
+            );
             println!("OK");
         }
         _ => fail("unknown command"),

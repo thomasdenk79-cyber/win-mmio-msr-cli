@@ -1,39 +1,49 @@
-name: Rust tests
+name: CI
 on:
   push:
+    branches: [main]
   pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+env:
+  CARGO_TERM_COLOR: always
 jobs:
-  linux:
+  rust-linux:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: Test CLI
-        run: cargo test --all-targets
-      - name: Lint CLI
-        run: cargo clippy --all-targets -- -D warnings
-      - name: Release build CLI
-        run: cargo build --release
-      - name: Test bridge
-        run: cargo test --manifest-path bridge/Cargo.toml
-      - name: Test service configuration
-        run: cargo test --manifest-path service/Cargo.toml
-  windows:
+        with:
+          components: clippy, rustfmt
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Clippy (workspace)
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Test (workspace)
+        run: cargo test --workspace --all-targets --locked
+      - name: Release build (workspace)
+        run: cargo build --workspace --release --locked
+  rust-windows:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-msvc
-      - name: Test CLI
-        run: cargo test --all-targets
-      - name: Release build CLI
-        run: cargo build --release
-      - name: Test bridge
-        run: cargo test --manifest-path bridge/Cargo.toml
-      - name: Release build bridge
-        run: cargo build --manifest-path bridge/Cargo.toml --release --target x86_64-pc-windows-msvc
-      - name: Test service
-        run: cargo test --manifest-path service/Cargo.toml
-      - name: Release build service
-        run: cargo build --manifest-path service/Cargo.toml --release --target x86_64-pc-windows-msvc
+          components: clippy
+      - name: Clippy (workspace, Windows code paths)
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Test (workspace)
+        run: cargo test --workspace --all-targets --locked
+      - name: MSVC release build (CLI, bridge, service)
+        run: cargo build --workspace --release --locked --target x86_64-pc-windows-msvc
+      - name: Upload user-mode binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: user-mode-x64
+          if-no-files-found: error
+          path: |
+            target/x86_64-pc-windows-msvc/release/win-mmio-msr-cli.exe
+            target/x86_64-pc-windows-msvc/release/rapl-bridge.exe
+            target/x86_64-pc-windows-msvc/release/rapl-watchdog.exe

@@ -1,6 +1,6 @@
 //! High-level, fail-closed orchestration for Intel RAPL package limits.
 pub mod backend;
-pub mod rapl;
+pub use rapl_core::rapl;
 
 use backend::{HardwareBackend, Identity};
 use rapl::{decode_limits, with_power_limits, Units};
