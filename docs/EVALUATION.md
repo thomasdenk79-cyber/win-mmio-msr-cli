@@ -96,4 +96,24 @@ expose generic physical memory and MSR access to user mode (CVE-2025-7771, used 
 disable security software), which is why such drivers end up on the vulnerable driver blocklist.
 `rapl-pkg` deliberately allows only MSR `0x606`/`0x610` and the single MCHBAR power limit
 register, restricted to SYSTEM and Administrators, so that it can be signed and kept off the
-blocklist.
+blocklist. Reusing `ThrottleStop.sys`'s undocumented IOCTL interface to avoid signing this
+project's own driver is explicitly out of scope: it would reintroduce the same arbitrary
+physical-memory primitive as a dependency and turn this project into a vector for it.
+
+## Alternative without test signing: Intel XTU
+
+[Intel Extreme Tuning Utility](https://www.intel.com/content/www/us/en/download/17881/)
+ships a Microsoft-signed driver and a command-line tool, `XtuCli.exe` (for example
+`XtuCli.exe -t PL1 -v 90`), so it needs no test signing, no reboot for a signature change and no
+owner-approved evaluation exception. It is Intel's own, actively maintained tool, which this
+project is not.
+
+Caveats specific to an OEM laptop such as this device:
+- XTU targets unlocked desktop CPUs on an overclocking-capable chipset; HX mobile CPUs are listed
+  as supported but the laptop vendor's BIOS/EC may lock or silently revert the limits XTU sets,
+  the same behavior this project's own TODO (E5) already flags for Intel IPF and vendor power
+  tools.
+- Not tested on this device as part of this project; try it, but do not assume it bypasses the
+  vendor firmware's own power policy. If XTU proves reliable here, prefer it over the evaluation
+  driver in this repository for simply setting PL1/PL2, and keep this project for the use cases
+  XTU does not cover (audit logging, backup/rollback, the watchdog service).
