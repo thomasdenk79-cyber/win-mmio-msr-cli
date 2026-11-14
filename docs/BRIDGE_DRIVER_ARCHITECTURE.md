@@ -20,7 +20,7 @@ in [BRIDGE_PROTOCOL.md](BRIDGE_PROTOCOL.md), the driver build and IOCTL contract
 | A non-administrator opens the device | SDDL `D:P(A;;GA;;;SY)(A;;GA;;;BA)` with `FILE_DEVICE_SECURE_OPEN`; write IOCTLs require `FILE_WRITE_DATA`, so a read-only handle cannot write |
 | Malformed or stale requests | `METHOD_BUFFERED` with exact input and output sizes, protocol version and reserved fields checked, register valid for the IOCTL; mismatches return `STATUS_REVISION_MISMATCH` or `STATUS_INVALID_PARAMETER` |
 | A compromised or buggy bridge writes unsafe values | The driver repeats the register policy (lock, protected bits, enable bits, `5 <= PL1 <= PL2 <= 157 W`) using the units it reads itself |
-| Firmware changes the register between read and write | Compare-and-write in the driver (`STATUS_RETRY`); the CLI re-reads both registers before writing and verifies the readback |
+| Firmware changes the register between read and write | The CLI re-reads both registers before writing and passes the planned value with every write; the bridge refuses when the register no longer holds it, and the driver's compare-and-write (`STATUS_RETRY`) covers the last step. The readback is verified |
 | Writes without evidence | The bridge persists `write_attempt` before the IOCTL; an unwritable audit log blocks the write |
 | Wrong CPU or platform | CPU gate in the driver at load (GenuineIntel, family 6, model `0xB7`, one package) and identity checks in the CLI |
 | Unvalidated MMIO layout | Build-time gates: MMIO read, MMIO layout validated and live writes are separate MSBuild properties, all off by default |

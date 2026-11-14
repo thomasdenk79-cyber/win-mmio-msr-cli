@@ -34,7 +34,7 @@ Each phase needs the previous one to pass. Record the results in the
 | H4 | H3 | Bridge error paths: missing device, non-administrator, unsupported register | Clear error; no register access |
 | H5 | all gates, signed, after review | `plan`, `apply` with a small PL1 change | Audit records with PL1/PL2 before, set and readback watts; backup; exact readback |
 | H6 | H5 | Same limits again | `changed: false`; no backup and no write |
-| H7 | H5 | Firmware or tool changes a register between `plan` and `apply` | Apply aborts without writing, or the driver returns `STATUS_RETRY` |
+| H7 | H5 | Firmware or tool changes a register between `plan` and `apply` | Apply aborts without writing, the bridge refuses the write (`write_refused`, "instead of the expected"), or the driver returns `STATUS_RETRY` |
 | H8 | H5 | Forced readback mismatch or bridge failure | Rollback records with `phase: rollback`; the restored values are read back |
 | H9 | H5 | Watchdog with `-MaxCorrectionsPerHour 2` and firmware resets | Corrections audited; the service halts with exit code 2 |
 | H10 | H5 | Sleep and resume, BIOS profile change, thermal load | Behaviour documented; no blind re-apply loop; no WHEA errors |

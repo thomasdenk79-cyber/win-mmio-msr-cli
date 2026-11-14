@@ -25,8 +25,10 @@ pub trait HardwareBackend {
     fn read_units(&mut self) -> Result<u64, String>;
     fn read_msr_limits(&mut self) -> Result<u64, String>;
     fn read_mmio_limits(&mut self) -> Result<u64, String>;
-    fn write_msr_limits(&mut self, value: u64) -> Result<(), String>;
-    fn write_mmio_limits(&mut self, value: u64) -> Result<(), String>;
+    /// Writes `value` only while the register still holds `expected` (the value the
+    /// caller planned against); a different value is refused and audited.
+    fn write_msr_limits(&mut self, expected: u64, value: u64) -> Result<(), String>;
+    fn write_mmio_limits(&mut self, expected: u64, value: u64) -> Result<(), String>;
     /// Labels subsequent writes in the audit log (apply or rollback).
     fn set_audit_phase(&mut self, _phase: AuditPhase) {}
 }
@@ -107,11 +109,17 @@ impl ExternalBridge {
         parse_hex_u64(&output).map_err(|e| format!("Bridge read output: {e}"))
     }
 
-    fn write_hex(&self, kind: &str, address: &str, value: u64) -> Result<(), String> {
+    fn write_hex(
+        &self,
+        kind: &str,
+        address: &str,
+        expected: u64,
+        value: u64,
+    ) -> Result<(), String> {
         if self.audit_log.is_none() {
             return Err("Register writes require an audit log (--audit-log)".into());
         }
-        let result = self.call(&[kind, address, &hex(value)])?;
+        let result = self.call(&[kind, address, &hex(expected), &hex(value)])?;
         if result != "OK" {
             return Err(format!("Bridge write did not acknowledge OK: {result}"));
         }
@@ -133,11 +141,11 @@ impl HardwareBackend for ExternalBridge {
     fn read_mmio_limits(&mut self) -> Result<u64, String> {
         self.read_hex(&["mmio-read", "0x59a0"])
     }
-    fn write_msr_limits(&mut self, value: u64) -> Result<(), String> {
-        self.write_hex("msr-write", "0x610", value)
+    fn write_msr_limits(&mut self, expected: u64, value: u64) -> Result<(), String> {
+        self.write_hex("msr-write", "0x610", expected, value)
     }
-    fn write_mmio_limits(&mut self, value: u64) -> Result<(), String> {
-        self.write_hex("mmio-write", "0x59a0", value)
+    fn write_mmio_limits(&mut self, expected: u64, value: u64) -> Result<(), String> {
+        self.write_hex("mmio-write", "0x59a0", expected, value)
     }
     fn set_audit_phase(&mut self, phase: AuditPhase) {
         self.audit_phase = Some(phase);
@@ -294,7 +302,7 @@ impl MockBackend {
         self
     }
 
-    fn write(&mut self, mmio: bool, value: u64) -> Result<(), String> {
+    fn write(&mut self, mmio: bool, expected: u64, value: u64) -> Result<(), String> {
         if !self.live_writes_enabled {
             return Err("simulated driver is read-only".into());
         }
@@ -317,11 +325,20 @@ impl MockBackend {
             Ok(value)
         };
         let units = Units::decode(self.units);
-        // Same register policy as rapl-bridge, so simulations refuse what hardware would.
-        let refusal = (previous != value)
-            .then(|| check_register_write(previous, value, units).err())
-            .flatten()
-            .map(|violation| format!("Refusing write to {register}: {violation}"));
+        // Same checks as rapl-bridge, so simulations refuse what hardware would.
+        let refusal = if previous != expected {
+            Some(format!(
+                "Refusing write to {register}: the register holds {} instead of the expected {}; \
+                 re-run plan",
+                hex(previous),
+                hex(expected)
+            ))
+        } else {
+            (previous != value)
+                .then(|| check_register_write(previous, value, units).err())
+                .flatten()
+                .map(|violation| format!("Refusing write to {register}: {violation}"))
+        };
         let Some(log) = &self.audit_log else {
             return match refusal {
                 Some(refusal) => Err(refusal),
@@ -376,11 +393,11 @@ impl HardwareBackend for MockBackend {
         }
         Ok(self.mmio)
     }
-    fn write_msr_limits(&mut self, value: u64) -> Result<(), String> {
-        self.write(false, value)
+    fn write_msr_limits(&mut self, expected: u64, value: u64) -> Result<(), String> {
+        self.write(false, expected, value)
     }
-    fn write_mmio_limits(&mut self, value: u64) -> Result<(), String> {
-        self.write(true, value)
+    fn write_mmio_limits(&mut self, expected: u64, value: u64) -> Result<(), String> {
+        self.write(true, expected, value)
     }
     fn set_audit_phase(&mut self, phase: AuditPhase) {
         self.audit_phase = Some(phase);
@@ -397,10 +414,10 @@ mod tests {
             live_writes_enabled: false,
             ..MockBackend::default()
         };
-        assert!(mock.write_msr_limits(0).is_err());
+        assert!(mock.write_msr_limits(mock.msr, 0).is_err());
         mock.live_writes_enabled = true;
         mock.mmio_verified = false;
-        assert!(mock.write_mmio_limits(0).is_err());
+        assert!(mock.write_mmio_limits(mock.mmio, 0).is_err());
         mock.mmio_readable = false;
         assert!(mock.read_mmio_limits().is_err());
         assert_eq!(mock.identity().unwrap().mchbar_base, None);
@@ -414,13 +431,17 @@ mod tests {
         let mut mock = MockBackend::default().with_audit_log(Some(log.clone()), None);
         let before = mock.msr;
         let too_high = with_power_limits(before, Units::decode(MOCK_UNITS), 55, 160).unwrap();
-        let error = mock.write_msr_limits(too_high).unwrap_err();
+        let error = mock.write_msr_limits(before, too_high).unwrap_err();
         assert!(error.starts_with("Refusing write to MSR_0x610"), "{error}");
+        assert_eq!(mock.msr, before);
+        let target = with_power_limits(before, Units::decode(MOCK_UNITS), 45, 100).unwrap();
+        let error = mock.write_msr_limits(target, target).unwrap_err();
+        assert!(error.contains("instead of the expected"), "{error}");
         assert_eq!(mock.msr, before);
         let bytes = std::fs::read(&log).unwrap();
         let rows = crate::audit::read_log(bytes.as_slice(), None).unwrap().rows;
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].outcome.as_deref(), Some("refused"));
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().all(|r| r.outcome.as_deref() == Some("refused")));
         assert_eq!(rows[0].pl2_set_w, Some(160.0));
         let _ = std::fs::remove_file(&log);
     }

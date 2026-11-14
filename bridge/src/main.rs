@@ -30,7 +30,8 @@ use std::process::ExitCode;
 
 const SOURCE: &str = "rapl-bridge";
 const USAGE: &str = "usage: rapl-bridge info | msr-read 0x606|0x610 | mmio-read 0x59a0 | \
-                     msr-write 0x610 0xVALUE | mmio-write 0x59a0 0xVALUE";
+                     msr-write 0x610 0xEXPECTED 0xVALUE | \
+                     mmio-write 0x59a0 0xEXPECTED 0xVALUE";
 
 /// Driver operations; implemented by the Windows device and by test fakes.
 trait Driver {
@@ -45,7 +46,8 @@ trait Driver {
 enum Command {
     Info,
     Read(RegisterId),
-    Write(RegisterId, u64),
+    /// Register, value the caller last read (expected), requested value.
+    Write(RegisterId, u64, u64),
 }
 
 fn parse_command(args: &[String]) -> Result<Command, String> {
@@ -63,14 +65,24 @@ fn parse_command(args: &[String]) -> Result<Command, String> {
             0x59a0 => Ok(Command::Read(RegisterId::MmioPackageLimit)),
             _ => whitelist(),
         },
-        [command, register, value] if command == "msr-write" => match number(register)? {
-            0x610 => Ok(Command::Write(RegisterId::PackageLimit, number(value)?)),
+        [command, register, expected, value] if command == "msr-write" => match number(register)? {
+            0x610 => Ok(Command::Write(
+                RegisterId::PackageLimit,
+                number(expected)?,
+                number(value)?,
+            )),
             _ => whitelist(),
         },
-        [command, register, value] if command == "mmio-write" => match number(register)? {
-            0x59a0 => Ok(Command::Write(RegisterId::MmioPackageLimit, number(value)?)),
-            _ => whitelist(),
-        },
+        [command, register, expected, value] if command == "mmio-write" => {
+            match number(register)? {
+                0x59a0 => Ok(Command::Write(
+                    RegisterId::MmioPackageLimit,
+                    number(expected)?,
+                    number(value)?,
+                )),
+                _ => whitelist(),
+            }
+        }
         _ => Err(USAGE.into()),
     }
 }
@@ -133,14 +145,19 @@ fn run(
     match command {
         Command::Info => Ok(format_info(&identity(&driver.info()?, &model()))),
         Command::Read(register) => driver.read(register).map(hex),
-        Command::Write(register, value) => write(driver, register, value, audit),
+        Command::Write(register, expected, value) => {
+            write(driver, register, expected, value, audit)
+        }
     }
 }
 
-/// Gate checks, policy check and an audited compare-and-write.
+/// Gate checks, an expected-value check, the policy check and an audited
+/// compare-and-write. `expected` is the value the caller planned against, so a
+/// change made after the caller's read is refused instead of overwritten.
 fn write(
     driver: &mut dyn Driver,
     register: RegisterId,
+    expected: u64,
     requested: u64,
     audit: &AuditEnv,
 ) -> Result<String, String> {
@@ -174,6 +191,18 @@ fn write(
         phase: audit.phase,
         simulated: false,
     };
+    if current != expected {
+        let refusal = format!(
+            "Refusing write to {}: the register holds {} instead of the expected {}; \
+             re-run plan",
+            register.name(),
+            hex(current),
+            hex(expected)
+        );
+        record_refusal(&context, current, requested, &refusal)
+            .map_err(|e| format!("{refusal}; {e}"))?;
+        return Err(refusal);
+    }
     if current != requested {
         if let Err(violation) = check_register_write(current, requested, units) {
             let refusal = format!("Refusing write to {}: {violation}", register.name());
@@ -355,12 +384,12 @@ mod tests {
                 Command::Read(RegisterId::MmioPackageLimit),
             ),
             (
-                "msr-write 0x610 0x1",
-                Command::Write(RegisterId::PackageLimit, 1),
+                "msr-write 0x610 0x2 0x1",
+                Command::Write(RegisterId::PackageLimit, 2, 1),
             ),
             (
-                "mmio-write 0x59a0 0xff",
-                Command::Write(RegisterId::MmioPackageLimit, 0xff),
+                "mmio-write 0x59a0 0x0 0xff",
+                Command::Write(RegisterId::MmioPackageLimit, 0, 0xff),
             ),
         ];
         for (text, expected) in cases {
@@ -371,12 +400,14 @@ mod tests {
             "info extra",
             "msr-read 0x611",
             "msr-read 610",
-            "msr-write 0x606 0x1",
+            "msr-write 0x606 0x1 0x1",
             "mmio-read 0x610",
             "mmio-write 0x59a0",
-            "msr-write 0x610 0x1 0x2",
-            "msr-write 0x610 -0x1",
-            "msr-write 0x610 0x10000000000000000",
+            "mmio-write 0x59a0 0x1",
+            "msr-write 0x610 0x1",
+            "msr-write 0x610 0x1 0x2 0x3",
+            "msr-write 0x610 0x1 -0x1",
+            "msr-write 0x610 0x10000000000000000 0x1",
         ] {
             assert!(parse_command(&args(bad)).is_err(), "{bad}");
         }
@@ -416,7 +447,7 @@ mod tests {
     fn writes_require_an_audit_log() {
         let mut driver = FakeDriver::new();
         let target = driver.target(45, 100);
-        let command = Command::Write(RegisterId::PackageLimit, target);
+        let command = Command::Write(RegisterId::PackageLimit, driver.msr, target);
         let error = run(command, &mut driver, &AuditEnv::default(), unknown).unwrap_err();
         assert!(error.contains("RAPL_AUDIT_LOG"), "{error}");
         assert_eq!(driver.writes, 0);
@@ -427,10 +458,12 @@ mod tests {
         let audit = audit_env("write");
         let mut driver = FakeDriver::new();
         let target = driver.target(45, 100);
-        let command = Command::Write(RegisterId::PackageLimit, target);
+        let before = driver.msr;
+        let command = Command::Write(RegisterId::PackageLimit, before, target);
         assert_eq!(run(command, &mut driver, &audit, unknown), Ok("OK".into()));
         assert_eq!(driver.msr, target);
-        assert_eq!(run(command, &mut driver, &audit, unknown), Ok("OK".into()));
+        let again = Command::Write(RegisterId::PackageLimit, target, target);
+        assert_eq!(run(again, &mut driver, &audit, unknown), Ok("OK".into()));
         assert_eq!(driver.writes, 1, "an unchanged value is not written again");
         let rows = rows(&audit);
         let outcomes: Vec<_> = rows.iter().map(|r| r.outcome.clone().unwrap()).collect();
@@ -462,12 +495,12 @@ mod tests {
         let protected = target ^ (1 << 17);
         let disabled = target & !(1 << 15);
         for value in [too_high, protected, disabled] {
-            let command = Command::Write(RegisterId::PackageLimit, value);
+            let command = Command::Write(RegisterId::PackageLimit, driver.msr, value);
             let error = run(command, &mut driver, &audit, unknown).unwrap_err();
             assert!(error.starts_with("Refusing write to MSR_0x610"), "{error}");
         }
         driver.mmio |= LOCK_BIT;
-        let command = Command::Write(RegisterId::MmioPackageLimit, target | LOCK_BIT);
+        let command = Command::Write(RegisterId::MmioPackageLimit, driver.mmio, target | LOCK_BIT);
         let error = run(command, &mut driver, &audit, unknown).unwrap_err();
         assert!(error.contains("locked"), "{error}");
         assert_eq!(driver.writes, 0);
@@ -485,10 +518,10 @@ mod tests {
         let mut driver = FakeDriver::new();
         let target = driver.target(45, 100);
         driver.info.flags &= !FLAG_MMIO_VERIFIED;
-        let mmio = Command::Write(RegisterId::MmioPackageLimit, target);
+        let mmio = Command::Write(RegisterId::MmioPackageLimit, driver.mmio, target);
         assert!(run(mmio, &mut driver, &audit, unknown).is_err());
         driver.info.flags |= FLAG_READ_ONLY;
-        let msr = Command::Write(RegisterId::PackageLimit, target);
+        let msr = Command::Write(RegisterId::PackageLimit, driver.msr, target);
         assert!(run(msr, &mut driver, &audit, unknown).is_err());
         driver.info.flags = FLAG_MMIO_READABLE | FLAG_MMIO_VERIFIED;
         assert!(run(msr, &mut driver, &audit, unknown).is_err());
@@ -498,12 +531,30 @@ mod tests {
     }
 
     #[test]
+    fn refuses_when_the_register_changed_since_the_callers_read() {
+        let audit = audit_env("stale");
+        let mut driver = FakeDriver::new();
+        let planned = driver.msr;
+        let target = driver.target(45, 100);
+        driver.msr = driver.target(40, 90);
+        let command = Command::Write(RegisterId::PackageLimit, planned, target);
+        let error = run(command, &mut driver, &audit, unknown).unwrap_err();
+        assert!(error.contains("instead of the expected"), "{error}");
+        assert_eq!(driver.writes, 0);
+        let rows = rows(&audit);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].outcome.as_deref(), Some("refused"));
+        assert_eq!(rows[0].pl1_before_w, Some(40.0));
+        cleanup(&audit);
+    }
+
+    #[test]
     fn concurrent_change_is_reported_and_audited() {
         let audit = audit_env("race");
         let mut driver = FakeDriver::new();
         driver.race = true;
         let target = driver.target(45, 100);
-        let command = Command::Write(RegisterId::PackageLimit, target);
+        let command = Command::Write(RegisterId::PackageLimit, driver.msr, target);
         let error = run(command, &mut driver, &audit, unknown).unwrap_err();
         assert!(error.contains("re-run plan"), "{error}");
         let outcomes: Vec<_> = rows(&audit)

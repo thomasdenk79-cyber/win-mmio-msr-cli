@@ -300,8 +300,8 @@ pub fn apply(
     write_backup(backup, plan)?;
     backend.set_audit_phase(AuditPhase::Apply);
     let action = (|| -> Result<Snapshot, String> {
-        backend.write_mmio_limits(after_mmio)?;
-        backend.write_msr_limits(plan.after_msr)?;
+        backend.write_mmio_limits(before_mmio, after_mmio)?;
+        backend.write_msr_limits(plan.before.msr, plan.after_msr)?;
         let after = read_snapshot(backend)?;
         if !same_platform(&after, &plan.before)
             || after.msr != plan.after_msr
@@ -349,15 +349,17 @@ fn read_register(backend: &mut dyn HardwareBackend, register: Register) -> Resul
 fn write_register(
     backend: &mut dyn HardwareBackend,
     register: Register,
+    expected: u64,
     value: u64,
 ) -> Result<(), String> {
     match register {
-        Register::Msr => backend.write_msr_limits(value),
-        Register::Mmio => backend.write_mmio_limits(value),
+        Register::Msr => backend.write_msr_limits(expected, value),
+        Register::Mmio => backend.write_mmio_limits(expected, value),
     }
 }
 
-/// Never restores a stale full register over an unexpected firmware change.
+/// Never restores a stale full register over an unexpected firmware change: the
+/// restore is a compare-and-write against the attempted value.
 fn rollback_register(
     backend: &mut dyn HardwareBackend,
     register: Register,
@@ -374,7 +376,7 @@ fn rollback_register(
             hex(current)
         ));
     }
-    write_register(backend, register, before)?;
+    write_register(backend, register, attempted, before)?;
     let actual = read_register(backend, register)?;
     if actual != before {
         return Err(format!("readback mismatch after restore ({})", hex(actual)));
@@ -579,5 +581,47 @@ mod tests {
         assert!(restore.simulated);
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(&log);
+    }
+
+    /// Simulates firmware lowering MSR PL1 while the MMIO write is in flight.
+    struct FirmwareRace(MockBackend);
+
+    impl HardwareBackend for FirmwareRace {
+        fn identity(&mut self) -> Result<Identity, String> {
+            self.0.identity()
+        }
+        fn read_units(&mut self) -> Result<u64, String> {
+            self.0.read_units()
+        }
+        fn read_msr_limits(&mut self) -> Result<u64, String> {
+            self.0.read_msr_limits()
+        }
+        fn read_mmio_limits(&mut self) -> Result<u64, String> {
+            self.0.read_mmio_limits()
+        }
+        fn write_msr_limits(&mut self, expected: u64, value: u64) -> Result<(), String> {
+            self.0.write_msr_limits(expected, value)
+        }
+        fn write_mmio_limits(&mut self, expected: u64, value: u64) -> Result<(), String> {
+            let units = Units::decode(self.0.units);
+            self.0.msr = with_power_limits(self.0.msr, units, 40, 157).unwrap();
+            self.0.write_mmio_limits(expected, value)
+        }
+    }
+
+    #[test]
+    fn firmware_change_after_the_race_check_is_never_overwritten() {
+        let mut dev = FirmwareRace(MockBackend::default());
+        let old_mmio = dev.0.mmio;
+        let plan = build_plan(&mut dev, 50, 120).unwrap();
+        let firmware = with_power_limits(dev.0.msr, Units::decode(dev.0.units), 40, 157).unwrap();
+        let path = temp("firmware-race.txt");
+        let error = apply(&mut dev, &plan, &path).unwrap_err();
+        assert!(error.contains("instead of the expected"), "{error}");
+        assert!(error.contains("Rollback MSR: FAILED (skipped"), "{error}");
+        assert!(error.contains("MMIO: restored and verified"), "{error}");
+        assert_eq!(dev.0.msr, firmware, "the firmware value stays");
+        assert_eq!(dev.0.mmio, old_mmio);
+        let _ = std::fs::remove_file(&path);
     }
 }

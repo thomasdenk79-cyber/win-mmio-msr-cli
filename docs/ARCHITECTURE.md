@@ -121,7 +121,7 @@ a PL1 below 5 W. The plan warns about this case in advance.
 |---|---|
 | User -> CLI | `--mock` needs no privileges. Live access needs an elevated process because the device admits only SYSTEM and Administrators. `apply` needs `--yes`, a new backup file and, with `--bridge`, an audit log. |
 | CLI or watchdog -> bridge | The bridge path must resolve to an existing `.exe`. Each call has a timeout (default 10 s, `--timeout-ms`) and at most 4096 bytes of output. Unset audit variables are removed from the child environment, so inherited values cannot redirect or relabel records. The bridge re-validates every argument. |
-| Bridge -> driver | Protocol 2 with exact buffer sizes. Reads open the device with `GENERIC_READ`, writes with `GENERIC_READ | GENERIC_WRITE`; the IOCTL codes require `FILE_READ_DATA` or `FILE_WRITE_DATA`. Writes are compare-and-write: `STATUS_RETRY` when the register changed since the bridge read it. |
+| Bridge -> driver | Protocol 2 with exact buffer sizes. Reads open the device with `GENERIC_READ`, writes with `GENERIC_READ | GENERIC_WRITE`; the IOCTL codes require `FILE_READ_DATA` or `FILE_WRITE_DATA`. Writes carry the caller's planned value: the bridge refuses when the register no longer holds it, and the driver's compare-and-write returns `STATUS_RETRY` when it changed in between. |
 | Driver -> hardware | Fixed register whitelist, CPU gate at load, build-time gates, MCHBAR from PCI `0:0.0` offset `0x48`, mapping only for the duration of one access, `rdmsr`/`wrmsr` faults caught. |
 | Service | Runs as LocalSystem. The installer refuses binaries and directories that a non-administrator could modify, replace or redirect. |
 

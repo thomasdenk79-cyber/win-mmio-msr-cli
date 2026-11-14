@@ -13,8 +13,8 @@ backups, readback comparison and rollback.
 | `msr-read 0x606` | MSR `0x606` as `0x` and 16 hexadecimal digits | `GENERIC_READ` |
 | `msr-read 0x610` | MSR `0x610` | `GENERIC_READ` |
 | `mmio-read 0x59a0` | `MCHBAR+0x59A0` | `GENERIC_READ` |
-| `msr-write 0x610 0xVALUE` | `OK` | `GENERIC_READ \| GENERIC_WRITE` |
-| `mmio-write 0x59a0 0xVALUE` | `OK` | `GENERIC_READ \| GENERIC_WRITE` |
+| `msr-write 0x610 0xEXPECTED 0xVALUE` | `OK` | `GENERIC_READ \| GENERIC_WRITE` |
+| `mmio-write 0x59a0 0xEXPECTED 0xVALUE` | `OK` | `GENERIC_READ \| GENERIC_WRITE` |
 
 - Arguments must be valid Unicode. Numbers are strict `0x`-prefixed hexadecimal values with 1 to
   16 digits, without sign or spaces. Any other command or register is refused before the device
@@ -70,15 +70,19 @@ For `msr-write` and `mmio-write` the bridge:
 2. Reads `info` and refuses when the CPU is unsupported, the driver is read-only or, for MMIO,
    the register is not both readable and validated.
 3. Reads the units (MSR `0x606`) and the current register value.
-4. When the requested value equals the current value, appends `write_unchanged`, sends no write
+4. Refuses when the current value differs from `0xEXPECTED`, the value the caller planned
+   against: the register changed after the caller's read (firmware, EC or another tool). The
+   refusal is appended as `write_refused`; the caller must re-run `plan`. This closes the window
+   between the caller's snapshot and the write, also for rollbacks.
+5. When the requested value equals the current value, appends `write_unchanged`, sends no write
    IOCTL and prints `OK`.
-5. Checks the transition with `check_register_write` (`rapl-core::policy`). A violation is
+6. Checks the transition with `check_register_write` (`rapl-core::policy`). A violation is
    appended as `write_refused` and the command fails.
-6. Appends `write_attempt` and flushes it to disk. Without this record no write happens.
-7. Sends a compare-and-write IOCTL with the value read in step 3 as the expected value. The
+7. Appends `write_attempt` and flushes it to disk. Without this record no write happens.
+8. Sends a compare-and-write IOCTL with the expected value. The
    driver re-reads the register, returns `STATUS_RETRY` when it changed, repeats the policy check,
    writes and returns its readback.
-8. Appends `write_result` with the readback and the outcome `changed`, `readback_mismatch` or
+9. Appends `write_result` with the readback and the outcome `changed`, `readback_mismatch` or
    `driver_error`, and fails unless the outcome is `changed`.
 
 ## Audit environment

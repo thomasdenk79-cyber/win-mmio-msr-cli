@@ -57,6 +57,16 @@ and PL2 must be freely selectable. Since `543ee40` every pair within
 is a hidden no-op for compatibility. The register write rule (lock, mask, enable bits, range) is
 unchanged in core, bridge and driver.
 
+## Independent review of the branch
+
+A separate review agent checked the complete branch diff. It found one medium issue: the write
+command carried no expected value, so the bridge compared against its own fresh read and a
+firmware change between the CLI's snapshot and the write (or before a rollback) could be
+overwritten. Fixed: `msr-write`/`mmio-write` take the caller's planned value, the bridge and the
+simulation refuse and audit a mismatch, and `apply` and rollback pass the planned or attempted
+value. Tests: `refuses_when_the_register_changed_since_the_callers_read`,
+`firmware_change_after_the_race_check_is_never_overwritten`.
+
 ## Hardening beyond the findings
 
 - Bridge output bounded to 4096 bytes, error messages sanitised to 1024 characters, labels to
