@@ -1,19 +1,46 @@
-# Validation test plan
+# Test plan
 
-| Phase | Test | Expected result |
-|---|---|---|
-| 0 | Linux CLI and bridge/service tests | All tests, format and Clippy checks pass |
-| 1 | `status --mock`, `plan --mock`, `apply --mock` | No hardware access; backup and rollback work |
-| 2 | Bridge on non-Windows or without device | Clear failure; no register access |
-| 3 | Unknown register/version/size/Reserved IOCTL | Rejected before hardware operation |
-| 4 | Signed driver, read-only mode | MSR reads match independent tools; MMIO remains unverified |
-| 5 | Firmware race before write | Operation aborts without writing |
-| 6 | Corrected register value | JSONL attempt/result events, exact readback and backup |
-| 7 | Same value requested | `write_unchanged`; no hardware write |
-| 8 | Driver failure or timeout | Error is logged; rollback status is explicit |
-| 9 | Watchdog service | Manual start only; correction creates backup and audit events |
-| 10 | Suspend/resume, BIOS override, WHEA/thermal event | Stop or document; no blind reapply loop |
+## Automated (CI, every pull request)
+
+| Job | Coverage |
+|---|---|
+| `rust-linux` | `cargo fmt --check`, Clippy with `-D warnings`, all unit tests, release build |
+| `rust-windows` | Clippy for the Windows code paths, all unit tests, MSVC release build, [`scripts/smoke.ps1`](../scripts/smoke.ps1), [`.github/scripts/service-smoke.ps1`](../.github/scripts/service-smoke.ps1) |
+| `powershell-lint` | Windows PowerShell 5.1 parser and PSScriptAnalyzer for every script |
+| `driver-windows` | WDK build with warnings as errors and ApiValidator, compile check with every gate enabled, code analysis (Driver Recommended Rules), InfVerif and package check |
+
+The unit tests cover the register encoding, the policy, the plan and apply sequence including the
+race check and the rollback, the audit format and the watt columns, the bridge command whitelist,
+gates, policy refusals and compare-and-write handling with a fake driver, the info protocol, the
+driver header against the Rust ABI and the watchdog configuration, correction budget and halt
+rules.
+
+`scripts/smoke.ps1` runs the release CLI in simulation: `status`, `plan` and `apply` with the
+PL1/PL2 before and set watt columns in JSON and CSV, the backup, a no-op apply and the refusal of
+unsafe requests. `service-smoke.ps1` installs the watchdog with the real Service Control Manager
+(without a driver) and checks the installer refusals, the refused start parameters, the halt after
+consecutive bridge errors and the audit records.
+
+## Hardware phases
+
+Each phase needs the previous one to pass. Record the results in the
+[validation report](VALIDATION_REPORT_TEMPLATE.md).
+
+| Phase | Build | Test | Expected result |
+|---|---|---|---|
+| H1 | none | System identity, Secure Boot, HVCI, blocklist | Values recorded; no security feature disabled |
+| H2 | default, signed | Install; `rapl-bridge info`; `status` | Bridge reports protocol 2 and the CPU gate; MSR values match HWiNFO and ThrottleStop three times |
+| H3 | `RaplEnableMmioRead=1`, signed | MCHBAR evidence; `status` | MCHBAR enabled and base plausible; MMIO equals MSR or the difference is explained |
+| H4 | H3 | Bridge error paths: missing device, non-administrator, unsupported register | Clear error; no register access |
+| H5 | all gates, signed, after review | `plan`, `apply` with a small PL1 change | Audit records with PL1/PL2 before, set and readback watts; backup; exact readback |
+| H6 | H5 | Same limits again | `changed: false`; no backup and no write |
+| H7 | H5 | Firmware or tool changes a register between `plan` and `apply` | Apply aborts without writing, the bridge refuses the write (`write_refused`, "instead of the expected"), or the driver returns `STATUS_RETRY` |
+| H8 | H5 | Forced readback mismatch or bridge failure | Rollback records with `phase: rollback`; the restored values are read back |
+| H9 | H5 | Watchdog with `-MaxCorrectionsPerHour 2` and firmware resets | Corrections audited; the service halts with exit code 2 |
+| H10 | H5 | Sleep and resume, BIOS profile change, thermal load | Behaviour documented; no blind re-apply loop; no WHEA errors |
 
 ## Stop criteria
 
-Unverified MCHBAR base, unsigned or blocked driver, required security disablement, inconsistent reads, unexpected firmware changes, thermal/EC alarm, WHEA or failed rollback.
+Unverified MCHBAR base or layout, unsigned or blocked driver, any required security feature
+disablement, inconsistent reads, unexpected firmware changes, thermal or EC alarms, WHEA errors or
+a failed rollback.

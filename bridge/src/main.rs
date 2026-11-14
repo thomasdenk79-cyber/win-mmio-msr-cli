@@ -1,314 +1,589 @@
+//! rapl-bridge: the only user-mode process that talks to the RaplPkg driver.
+//!
+//! Fixed register whitelist, strict hexadecimal arguments, a least-privilege device
+//! handle, the shared write policy and an audit record that is persisted before
+//! every register write.
 #![cfg_attr(not(windows), allow(dead_code))]
+
+mod abi;
+#[cfg(windows)]
+mod device;
+
+use abi::{
+    Info, RegisterId, FLAG_CPU_SUPPORTED, FLAG_MMIO_READABLE, FLAG_MMIO_VERIFIED, FLAG_READ_ONLY,
+    VENDOR_INTEL,
+};
+use rapl_core::{
+    audit::{
+        audited_write, hex, record_refusal, sanitize_label, sanitize_text, AuditPhase,
+        WriteContext, MAX_DETAIL_CHARS,
+    },
+    parse_hex_u64,
+    policy::check_register_write,
+    protocol::{format_info, Identity},
+    rapl::Units,
+};
+use std::ffi::OsString;
 use std::io::{self, Write};
 use std::path::PathBuf;
+use std::process::ExitCode;
 
-fn audit_event(event: &str, command: &str, register: u32, previous: u64, requested: u64, readback: Option<u64>, outcome: &str) {
-    let Some(path) = std::env::var_os("RAPL_AUDIT_LOG").map(PathBuf::from) else { return; };
-    let value = serde_json::json!({
-        "timestamp_utc": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
-        "event": event, "command": command, "register_id": register,
-        "register": match register { REG_UNITS => "MSR_0x606", REG_PACKAGE => "MSR_0x610", REG_MMIO => "MMIO_MCHBAR_0x59A0", _ => "UNKNOWN" },
-        "previous": format!("0x{previous:016x}"), "requested": format!("0x{requested:016x}"),
-        "readback": readback.map(|v| format!("0x{v:016x}")), "outcome": outcome,
-        "pid": std::process::id(), "source": "rapl-bridge"
-    });
-    let line = serde_json::to_string(&value).unwrap_or_else(|_| "{\"outcome\":\"audit_serialization_error\"}".into());
-    let result = (|| -> io::Result<()> {
-        if let Some(parent) = path.parent() { std::fs::create_dir_all(parent)?; }
-        let mut file = std::fs::OpenOptions::new().create(true).append(true).open(&path)?;
-        writeln!(file, "{line}")?; file.sync_all()
-    })();
-    if let Err(error) = result { fail(format!("audit log write failed for {}: {error}", path.display())); }
+const SOURCE: &str = "rapl-bridge";
+const USAGE: &str = "usage: rapl-bridge info | msr-read 0x606|0x610 | mmio-read 0x59a0 | \
+                     msr-write 0x610 0xEXPECTED 0xVALUE | \
+                     mmio-write 0x59a0 0xEXPECTED 0xVALUE";
+
+/// Driver operations; implemented by the Windows device and by test fakes.
+trait Driver {
+    fn info(&mut self) -> Result<Info, String>;
+    fn read(&mut self, register: RegisterId) -> Result<u64, String>;
+    /// Writes `value` only while the register still holds `expected`; returns the
+    /// driver's readback.
+    fn write(&mut self, register: RegisterId, expected: u64, value: u64) -> Result<u64, String>;
 }
 
-const DEVICE: &str = r"\\.\RaplPkg";
-const fn ctl(function: u32, access: u32) -> u32 {
-    (0x8010 << 16) | (function << 2) | (access << 14)
-}
-const IOCTL_GET_INFO: u32 = ctl(0x800, 1);
-const IOCTL_READ_MSR: u32 = ctl(0x801, 1);
-const IOCTL_READ_MMIO: u32 = ctl(0x802, 1);
-const IOCTL_WRITE_MSR: u32 = ctl(0x803, 2);
-const IOCTL_WRITE_MMIO: u32 = ctl(0x804, 2);
-const VERSION: u32 = 1;
-const REG_UNITS: u32 = 1;
-const REG_PACKAGE: u32 = 2;
-const REG_MMIO: u32 = 3;
-
-#[repr(C)]
-#[derive(Default, Clone, Copy)]
-struct Request {
-    size: u32,
-    version: u32,
-    register_id: u32,
-    reserved: u32,
-    expected: u64,
-    value: u64,
-}
-#[repr(C)]
-#[derive(Default, Clone, Copy)]
-struct Response {
-    size: u32,
-    version: u32,
-    register_id: u32,
-    flags: u32,
-    value: u64,
-}
-#[repr(C)]
-#[derive(Default, Clone, Copy)]
-struct Info {
-    size: u32,
-    version: u32,
-    vendor: u32,
-    family: u32,
-    model: u32,
-    stepping: u32,
-    flags: u32,
-    packages: u32,
-    reserved: u32,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Command {
+    Info,
+    Read(RegisterId),
+    /// Register, value the caller last read (expected), requested value.
+    Write(RegisterId, u64, u64),
 }
 
-fn fail(msg: impl AsRef<str>) -> ! {
-    let _ = writeln!(io::stderr(), "{}", msg.as_ref());
-    std::process::exit(1)
-}
-fn parse_hex(s: &str) -> u64 {
-    let v = s
-        .strip_prefix("0x")
-        .or_else(|| s.strip_prefix("0X"))
-        .unwrap_or("");
-    if v.is_empty() {
-        fail("expected 0x-prefixed hexadecimal value")
-    };
-    u64::from_str_radix(v, 16).unwrap_or_else(|_| fail("invalid hexadecimal value"))
-}
-fn check_register(command: &str, value: u64) -> u32 {
-    match command {
-        "msr-read" | "msr-write" if value == 0x606 => REG_UNITS,
-        "msr-read" | "msr-write" if value == 0x610 => REG_PACKAGE,
-        "mmio-read" | "mmio-write" if value == 0x59a0 => REG_MMIO,
-        _ => fail("register is not in the fixed whitelist"),
+fn parse_command(args: &[String]) -> Result<Command, String> {
+    let number = |text: &String| parse_hex_u64(text).map_err(|e| format!("{e}; {USAGE}"));
+    let whitelist =
+        || Err("Register is not in the fixed whitelist (0x606, 0x610, 0x59a0)".to_string());
+    match args {
+        [command] if command == "info" => Ok(Command::Info),
+        [command, register] if command == "msr-read" => match number(register)? {
+            0x606 => Ok(Command::Read(RegisterId::Units)),
+            0x610 => Ok(Command::Read(RegisterId::PackageLimit)),
+            _ => whitelist(),
+        },
+        [command, register] if command == "mmio-read" => match number(register)? {
+            0x59a0 => Ok(Command::Read(RegisterId::MmioPackageLimit)),
+            _ => whitelist(),
+        },
+        [command, register, expected, value] if command == "msr-write" => match number(register)? {
+            0x610 => Ok(Command::Write(
+                RegisterId::PackageLimit,
+                number(expected)?,
+                number(value)?,
+            )),
+            _ => whitelist(),
+        },
+        [command, register, expected, value] if command == "mmio-write" => {
+            match number(register)? {
+                0x59a0 => Ok(Command::Write(
+                    RegisterId::MmioPackageLimit,
+                    number(expected)?,
+                    number(value)?,
+                )),
+                _ => whitelist(),
+            }
+        }
+        _ => Err(USAGE.into()),
     }
+}
+
+/// Audit settings passed by the CLI or the watchdog through the environment.
+#[derive(Debug, Default)]
+struct AuditEnv {
+    log: Option<PathBuf>,
+    reason: Option<String>,
+    phase: Option<AuditPhase>,
+}
+
+impl AuditEnv {
+    fn from_env(get: impl Fn(&str) -> Option<OsString>) -> Result<Self, String> {
+        let log = get("RAPL_AUDIT_LOG")
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from);
+        let reason = get("RAPL_AUDIT_REASON")
+            .map(|value| sanitize_label(&value.to_string_lossy()))
+            .filter(|value| !value.is_empty());
+        let phase = match get("RAPL_AUDIT_PHASE") {
+            None => None,
+            Some(value) => Some(
+                AuditPhase::parse(&value.to_string_lossy())
+                    .ok_or("RAPL_AUDIT_PHASE must be apply or rollback")?,
+            ),
+        };
+        Ok(Self { log, reason, phase })
+    }
+}
+
+fn identity(info: &Info, model: &str) -> Identity {
+    let vendor = if info.vendor == VENDOR_INTEL {
+        "GenuineIntel"
+    } else {
+        "unknown"
+    };
+    Identity {
+        vendor: vendor.into(),
+        model: model.into(),
+        cpu_family: info.family,
+        cpu_model: info.model,
+        cpu_stepping: info.stepping,
+        packages: info.packages,
+        cpu_supported: info.flags & FLAG_CPU_SUPPORTED != 0,
+        mmio_readable: info.flags & FLAG_MMIO_READABLE != 0,
+        mmio_verified: info.flags & FLAG_MMIO_VERIFIED != 0,
+        live_writes_enabled: info.flags & FLAG_READ_ONLY == 0,
+        mchbar_base: (info.mchbar_base != 0).then_some(info.mchbar_base),
+        simulated: false,
+    }
+}
+
+fn run(
+    command: Command,
+    driver: &mut dyn Driver,
+    audit: &AuditEnv,
+    model: impl FnOnce() -> String,
+) -> Result<String, String> {
+    match command {
+        Command::Info => Ok(format_info(&identity(&driver.info()?, &model()))),
+        Command::Read(register) => driver.read(register).map(hex),
+        Command::Write(register, expected, value) => {
+            write(driver, register, expected, value, audit)
+        }
+    }
+}
+
+/// Gate checks, an expected-value check, the policy check and an audited
+/// compare-and-write. `expected` is the value the caller planned against, so a
+/// change made after the caller's read is refused instead of overwritten.
+fn write(
+    driver: &mut dyn Driver,
+    register: RegisterId,
+    expected: u64,
+    requested: u64,
+    audit: &AuditEnv,
+) -> Result<String, String> {
+    let log = audit
+        .log
+        .as_deref()
+        .ok_or("Register writes require RAPL_AUDIT_LOG (append-only JSONL audit log)")?;
+    let (command, _) = register
+        .write_operation()
+        .ok_or("The register is read-only")?;
+    let info = driver.info()?;
+    if info.flags & FLAG_CPU_SUPPORTED == 0 {
+        return Err("The driver reports this CPU as unsupported".into());
+    }
+    if info.flags & FLAG_READ_ONLY != 0 {
+        return Err("The driver is read-only (live writes are disabled)".into());
+    }
+    let mmio_gates = FLAG_MMIO_READABLE | FLAG_MMIO_VERIFIED;
+    if register == RegisterId::MmioPackageLimit && info.flags & mmio_gates != mmio_gates {
+        return Err("MMIO writes require a readable, validated MCHBAR+0x59A0 layout".into());
+    }
+    let units = Units::decode(driver.read(RegisterId::Units)?);
+    let current = driver.read(register)?;
+    let context = WriteContext {
+        log,
+        source: SOURCE,
+        command,
+        register: register.name(),
+        units,
+        reason: audit.reason.as_deref(),
+        phase: audit.phase,
+        simulated: false,
+    };
+    if current != expected {
+        let refusal = format!(
+            "Refusing write to {}: the register holds {} instead of the expected {}; \
+             re-run plan",
+            register.name(),
+            hex(current),
+            hex(expected)
+        );
+        record_refusal(&context, current, requested, &refusal)
+            .map_err(|e| format!("{refusal}; {e}"))?;
+        return Err(refusal);
+    }
+    if current != requested {
+        if let Err(violation) = check_register_write(current, requested, units) {
+            let refusal = format!("Refusing write to {}: {violation}", register.name());
+            record_refusal(&context, current, requested, &refusal)
+                .map_err(|e| format!("{refusal}; {e}"))?;
+            return Err(refusal);
+        }
+    }
+    audited_write(&context, current, requested, || {
+        driver.write(register, current, requested)
+    })?;
+    Ok("OK".into())
+}
+
+fn arguments() -> Result<Vec<String>, String> {
+    std::env::args_os()
+        .skip(1)
+        .map(|arg| {
+            arg.into_string()
+                .map_err(|_| "Arguments must be valid Unicode".to_string())
+        })
+        .collect()
+}
+
+#[cfg(windows)]
+fn execute() -> Result<String, String> {
+    let command = parse_command(&arguments()?)?;
+    let audit = AuditEnv::from_env(|key| std::env::var_os(key))?;
+    let mut device = device::Device::open(matches!(command, Command::Write(..)))?;
+    run(command, &mut device, &audit, device::processor_name)
 }
 
 #[cfg(not(windows))]
-fn main() {
-    fail("rapl-bridge is Windows-only; use the root CLI --mock on this host")
+fn execute() -> Result<String, String> {
+    parse_command(&arguments()?)?;
+    Err("rapl-bridge is Windows-only; use the CLI with --mock on this host".into())
 }
 
-#[cfg(windows)]
-fn main() {
-    let mut args = std::env::args().skip(1);
-    let command=args.next().unwrap_or_else(|| fail("usage: rapl-bridge.exe info|msr-read 0x606|msr-write 0x610 0xVALUE|mmio-read 0x59a0|mmio-write 0x59a0 0xVALUE"));
-    let handle = open_device();
-    match command.as_str() {
-        "info" => {
-            let info: Info = ioctl(handle, IOCTL_GET_INFO, &Request::default());
-            if info.version != VERSION || info.size < std::mem::size_of::<Info>() as u32 {
-                fail("driver returned an invalid info structure")
-            }
-            println!("protocol=1\nvendor={}\nmodel={}\nmmio_59a0_64bit_verified={}", if info.vendor==0x8086 {"GenuineIntel"} else {"unknown"}, processor_name(), (info.flags&1)!=0);
-        }
-        "msr-read" | "mmio-read" => {
-            let address = args.next().unwrap_or_else(|| fail("missing register"));
-            let id = check_register(&command, parse_hex(&address));
-            let r: Response = ioctl(
-                handle,
-                if command == "msr-read" {
-                    IOCTL_READ_MSR
-                } else {
-                    IOCTL_READ_MMIO
-                },
-                &Request {
-                    size: std::mem::size_of::<Request>() as u32,
-                    version: VERSION,
-                    register_id: id,
-                    ..Default::default()
-                },
-            );
-            check_response(r, id);
-            println!("0x{:016x}", r.value);
-        }
-        "msr-write" | "mmio-write" => {
-            let address = args.next().unwrap_or_else(|| fail("missing register"));
-            let value = args.next().unwrap_or_else(|| fail("missing value"));
-            let id = check_register(&command, parse_hex(&address));
-            let requested = parse_hex(&value);
-            let current: Response = ioctl(
-                handle,
-                if command == "msr-write" {
-                    IOCTL_READ_MSR
-                } else {
-                    IOCTL_READ_MMIO
-                },
-                &Request {
-                    size: std::mem::size_of::<Request>() as u32,
-                    version: VERSION,
-                    register_id: id,
-                    ..Default::default()
-                },
-            );
-            check_response(current, id);
-            if current.value == requested {
-                audit_event("write_unchanged", &command, id, current.value, requested, Some(current.value), "no_change");
-                println!("OK");
-                unsafe { windows_sys::Win32::Foundation::CloseHandle(handle); }
-                return;
-            }
-            audit_event("write_attempt", &command, id, current.value, requested, None, "pending");
-            let r: Response = ioctl(
-                handle,
-                if command == "msr-write" {
-                    IOCTL_WRITE_MSR
-                } else {
-                    IOCTL_WRITE_MMIO
-                },
-                &Request {
-                    size: std::mem::size_of::<Request>() as u32,
-                    version: VERSION,
-                    register_id: id,
-                    expected: current.value,
-                    value: requested,
-                    ..Default::default()
-                },
-            );
-            check_response(r, id);
-            if r.value != requested {
-                audit_event("write_result", &command, id, current.value, requested, Some(r.value), "readback_mismatch");
-                fail("driver write readback did not match")
-            };
-            audit_event("write_result", &command, id, current.value, requested, Some(r.value), "changed");
-            println!("OK");
-        }
-        _ => fail("unknown command"),
-    }
-    unsafe {
-        windows_sys::Win32::Foundation::CloseHandle(handle);
-    }
-}
-
-#[cfg(windows)]
-fn processor_name() -> String {
-    use windows_sys::Win32::{
-        Foundation::ERROR_SUCCESS,
-        System::Registry::{RegGetValueW, HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ},
-    };
-    let key: Vec<u16> = "HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0\0"
-        .encode_utf16()
-        .collect();
-    let value: Vec<u16> = "ProcessorNameString"
-        .encode_utf16()
-        .chain(std::iter::once(0))
-        .collect();
-    let mut bytes = vec![0u8; 512];
-    let mut size = bytes.len() as u32;
-    let status = unsafe {
-        RegGetValueW(
-            HKEY_LOCAL_MACHINE,
-            key.as_ptr(),
-            value.as_ptr(),
-            RRF_RT_REG_SZ,
-            std::ptr::null_mut(),
-            bytes.as_mut_ptr() as *mut _,
-            &mut size,
-        )
-    };
-    if status != ERROR_SUCCESS || size < 2 {
-        return "unknown".into();
-    }
-    let wide = unsafe {
-        std::slice::from_raw_parts(
-            bytes.as_ptr() as *const u16,
-            (size as usize / 2).saturating_sub(1),
-        )
-    };
-    let text = String::from_utf16_lossy(wide);
-    text.chars()
-        .filter(|c| !c.is_control())
-        .collect::<String>()
-        .trim()
-        .to_string()
-}
-
-#[cfg(windows)]
-fn check_response(r: Response, id: u32) {
-    if r.version != VERSION
-        || r.size < std::mem::size_of::<Response>() as u32
-        || r.register_id != id
-    {
-        fail("driver returned an invalid response")
-    }
-}
-
-#[cfg(windows)]
-fn open_device() -> windows_sys::Win32::Foundation::HANDLE {
-    use windows_sys::Win32::{
-        Foundation::{GetLastError, ERROR_ACCESS_DENIED, INVALID_HANDLE_VALUE},
-        Storage::FileSystem::{
-            CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
-            OPEN_EXISTING,
+fn main() -> ExitCode {
+    match execute() {
+        Ok(text) => match writeln!(io::stdout().lock(), "{}", text.trim_end()) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(_) => ExitCode::FAILURE,
         },
-    };
-    let wide: Vec<u16> = DEVICE.encode_utf16().chain(std::iter::once(0)).collect();
-    let h = unsafe {
-        CreateFileW(
-            wide.as_ptr(),
-            FILE_GENERIC_READ | FILE_GENERIC_WRITE,
-            0,
-            std::ptr::null(),
-            OPEN_EXISTING,
-            FILE_ATTRIBUTE_NORMAL,
-            std::ptr::null_mut(),
-        )
-    };
-    if h == INVALID_HANDLE_VALUE {
-        let e = unsafe { GetLastError() };
-        if e == ERROR_ACCESS_DENIED {
-            fail("access denied: run as Administrator/SYSTEM")
-        };
-        fail(format!("cannot open \\.\\RaplPkg (Win32 error {e})"));
+        Err(error) => {
+            let _ = writeln!(
+                io::stderr().lock(),
+                "{}",
+                sanitize_text(&error, MAX_DETAIL_CHARS)
+            );
+            ExitCode::FAILURE
+        }
     }
-    h
-}
-
-#[cfg(windows)]
-fn ioctl<T: Copy, R: Default + Copy>(
-    handle: windows_sys::Win32::Foundation::HANDLE,
-    code: u32,
-    input: &T,
-) -> R {
-    use windows_sys::Win32::System::IO::DeviceIoControl;
-    let mut output = R::default();
-    let mut returned = 0u32;
-    let ok = unsafe {
-        DeviceIoControl(
-            handle,
-            code,
-            input as *const _ as *mut _,
-            std::mem::size_of::<T>() as u32,
-            &mut output as *mut _ as *mut _,
-            std::mem::size_of::<R>() as u32,
-            &mut returned,
-            std::ptr::null_mut(),
-        )
-    };
-    if ok == 0 {
-        let e = unsafe { windows_sys::Win32::Foundation::GetLastError() };
-        fail(format!("driver IOCTL failed (Win32 error {e})"));
-    }
-    if returned < std::mem::size_of::<R>() as u32 {
-        fail("driver returned a truncated response")
-    }
-    output
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::abi::describe_win32_error;
+    use rapl_core::audit::{read_log, AuditRow};
+    use rapl_core::protocol::parse_info;
+    use rapl_core::rapl::{with_power_limits, LOCK_BIT};
+
+    const UNITS: u64 = 0x000a_0e03;
+
+    struct FakeDriver {
+        info: Info,
+        msr: u64,
+        mmio: u64,
+        writes: usize,
+        /// Simulates firmware changing the register between read and write.
+        race: bool,
+    }
+
+    impl FakeDriver {
+        fn new() -> Self {
+            let base = (0x6eu64 << 17) | (1 << 16) | (0x21u64 << 49) | (1 << 48);
+            let value = with_power_limits(base, Units::decode(UNITS), 55, 157).unwrap();
+            Self {
+                info: Info {
+                    size: 40,
+                    version: abi::ABI_VERSION,
+                    vendor: VENDOR_INTEL,
+                    family: 6,
+                    model: 0xb7,
+                    stepping: 1,
+                    flags: FLAG_CPU_SUPPORTED | FLAG_MMIO_READABLE | FLAG_MMIO_VERIFIED,
+                    packages: 1,
+                    mchbar_base: 0xfed1_0000,
+                },
+                msr: value,
+                mmio: value,
+                writes: 0,
+                race: false,
+            }
+        }
+
+        fn target(&self, pl1: u16, pl2: u16) -> u64 {
+            with_power_limits(self.msr, Units::decode(UNITS), pl1, pl2).unwrap()
+        }
+    }
+
+    impl Driver for FakeDriver {
+        fn info(&mut self) -> Result<Info, String> {
+            Ok(self.info)
+        }
+
+        fn read(&mut self, register: RegisterId) -> Result<u64, String> {
+            Ok(match register {
+                RegisterId::Units => UNITS,
+                RegisterId::PackageLimit => self.msr,
+                RegisterId::MmioPackageLimit => self.mmio,
+            })
+        }
+
+        fn write(
+            &mut self,
+            register: RegisterId,
+            expected: u64,
+            value: u64,
+        ) -> Result<u64, String> {
+            let race = self.race;
+            let slot = match register {
+                RegisterId::Units => return Err("read-only".into()),
+                RegisterId::PackageLimit => &mut self.msr,
+                RegisterId::MmioPackageLimit => &mut self.mmio,
+            };
+            if race {
+                *slot ^= 1 << 3;
+            }
+            if *slot != expected {
+                return Err(describe_win32_error(1237));
+            }
+            *slot = value;
+            self.writes += 1;
+            Ok(value)
+        }
+    }
+
+    fn args(text: &str) -> Vec<String> {
+        text.split_whitespace().map(String::from).collect()
+    }
+
+    fn unknown() -> String {
+        "unknown".into()
+    }
+
+    fn audit_env(name: &str) -> AuditEnv {
+        let log =
+            std::env::temp_dir().join(format!("rapl_bridge_{}_{name}.jsonl", std::process::id()));
+        let _ = std::fs::remove_file(&log);
+        AuditEnv {
+            log: Some(log),
+            reason: Some("unit test".into()),
+            phase: Some(AuditPhase::Apply),
+        }
+    }
+
+    fn rows(audit: &AuditEnv) -> Vec<AuditRow> {
+        let log = audit.log.as_ref().unwrap();
+        match std::fs::read(log) {
+            Ok(bytes) => read_log(bytes.as_slice(), None).unwrap().rows,
+            Err(_) => Vec::new(),
+        }
+    }
+
+    fn cleanup(audit: &AuditEnv) {
+        let _ = std::fs::remove_file(audit.log.as_ref().unwrap());
+    }
+
     #[test]
-    fn only_fixed_registers_are_accepted() {
-        assert_eq!(check_register("msr-read", 0x606), REG_UNITS);
-        assert_eq!(check_register("msr-read", 0x610), REG_PACKAGE);
-        assert_eq!(check_register("mmio-read", 0x59a0), REG_MMIO);
+    fn parses_only_whitelisted_commands() {
+        let cases = [
+            ("info", Command::Info),
+            ("msr-read 0x606", Command::Read(RegisterId::Units)),
+            ("msr-read 0x610", Command::Read(RegisterId::PackageLimit)),
+            (
+                "mmio-read 0x59A0",
+                Command::Read(RegisterId::MmioPackageLimit),
+            ),
+            (
+                "msr-write 0x610 0x2 0x1",
+                Command::Write(RegisterId::PackageLimit, 2, 1),
+            ),
+            (
+                "mmio-write 0x59a0 0x0 0xff",
+                Command::Write(RegisterId::MmioPackageLimit, 0, 0xff),
+            ),
+        ];
+        for (text, expected) in cases {
+            assert_eq!(parse_command(&args(text)), Ok(expected), "{text}");
+        }
+        for bad in [
+            "",
+            "info extra",
+            "msr-read 0x611",
+            "msr-read 610",
+            "msr-write 0x606 0x1 0x1",
+            "mmio-read 0x610",
+            "mmio-write 0x59a0",
+            "mmio-write 0x59a0 0x1",
+            "msr-write 0x610 0x1",
+            "msr-write 0x610 0x1 0x2 0x3",
+            "msr-write 0x610 0x1 -0x1",
+            "msr-write 0x610 0x10000000000000000 0x1",
+        ] {
+            assert!(parse_command(&args(bad)).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn info_reports_protocol_2_gates() {
+        let mut driver = FakeDriver::new();
+        let model = || "Intel(R) Core(TM) i9-13950HX".to_string();
+        let text = run(Command::Info, &mut driver, &AuditEnv::default(), model).unwrap();
+        let identity = parse_info(&text).unwrap();
+        assert!(identity.cpu_supported && identity.mmio_readable && identity.mmio_verified);
+        assert!(identity.live_writes_enabled);
+        assert_eq!(identity.mchbar_base, Some(0xfed1_0000));
+        driver.info.flags = FLAG_READ_ONLY;
+        driver.info.mchbar_base = 0;
+        let text = run(Command::Info, &mut driver, &AuditEnv::default(), unknown).unwrap();
+        let identity = parse_info(&text).unwrap();
+        assert!(!identity.cpu_supported && !identity.mmio_readable);
+        assert!(!identity.live_writes_enabled);
+        assert_eq!(identity.mchbar_base, None);
+    }
+
+    #[test]
+    fn reads_print_fixed_width_hex() {
+        let mut driver = FakeDriver::new();
+        let text = run(
+            Command::Read(RegisterId::Units),
+            &mut driver,
+            &AuditEnv::default(),
+            unknown,
+        );
+        assert_eq!(text, Ok("0x00000000000a0e03".into()));
+    }
+
+    #[test]
+    fn writes_require_an_audit_log() {
+        let mut driver = FakeDriver::new();
+        let target = driver.target(45, 100);
+        let command = Command::Write(RegisterId::PackageLimit, driver.msr, target);
+        let error = run(command, &mut driver, &AuditEnv::default(), unknown).unwrap_err();
+        assert!(error.contains("RAPL_AUDIT_LOG"), "{error}");
+        assert_eq!(driver.writes, 0);
+    }
+
+    #[test]
+    fn audited_write_records_watt_columns() {
+        let audit = audit_env("write");
+        let mut driver = FakeDriver::new();
+        let target = driver.target(45, 100);
+        let before = driver.msr;
+        let command = Command::Write(RegisterId::PackageLimit, before, target);
+        assert_eq!(run(command, &mut driver, &audit, unknown), Ok("OK".into()));
+        assert_eq!(driver.msr, target);
+        let again = Command::Write(RegisterId::PackageLimit, target, target);
+        assert_eq!(run(again, &mut driver, &audit, unknown), Ok("OK".into()));
+        assert_eq!(driver.writes, 1, "an unchanged value is not written again");
+        let rows = rows(&audit);
+        let outcomes: Vec<_> = rows.iter().map(|r| r.outcome.clone().unwrap()).collect();
+        assert_eq!(outcomes, ["pending", "changed", "no_change"]);
+        let changed = &rows[1];
+        assert_eq!(changed.source.as_deref(), Some(SOURCE));
+        assert_eq!(changed.register.as_deref(), Some("MSR_0x610"));
+        assert_eq!(changed.phase.as_deref(), Some("apply"));
+        assert_eq!(changed.reason.as_deref(), Some("unit test"));
+        assert_eq!(
+            (changed.pl1_before_w, changed.pl2_before_w),
+            (Some(55.0), Some(157.0))
+        );
+        assert_eq!(
+            (changed.pl1_set_w, changed.pl2_set_w),
+            (Some(45.0), Some(100.0))
+        );
+        assert_eq!(changed.pl1_readback_w, Some(45.0));
+        assert!(!changed.simulated);
+        cleanup(&audit);
+    }
+
+    #[test]
+    fn refuses_policy_violations_and_audits_them() {
+        let audit = audit_env("refuse");
+        let mut driver = FakeDriver::new();
+        let target = driver.target(45, 100);
+        let too_high = (target & !(0x7fff << 32)) | ((158 * 8) << 32);
+        let protected = target ^ (1 << 17);
+        let disabled = target & !(1 << 15);
+        for value in [too_high, protected, disabled] {
+            let command = Command::Write(RegisterId::PackageLimit, driver.msr, value);
+            let error = run(command, &mut driver, &audit, unknown).unwrap_err();
+            assert!(error.starts_with("Refusing write to MSR_0x610"), "{error}");
+        }
+        driver.mmio |= LOCK_BIT;
+        let command = Command::Write(RegisterId::MmioPackageLimit, driver.mmio, target | LOCK_BIT);
+        let error = run(command, &mut driver, &audit, unknown).unwrap_err();
+        assert!(error.contains("locked"), "{error}");
+        assert_eq!(driver.writes, 0);
+        let rows = rows(&audit);
+        assert_eq!(rows.len(), 4);
+        assert!(rows.iter().all(|r| r.outcome.as_deref() == Some("refused")));
+        assert!(rows[0].detail.as_deref().unwrap().contains("PL1 <= PL2"));
+        assert_eq!(rows[0].pl2_set_w, Some(158.0));
+        cleanup(&audit);
+    }
+
+    #[test]
+    fn honours_driver_gates_before_auditing() {
+        let audit = audit_env("gates");
+        let mut driver = FakeDriver::new();
+        let target = driver.target(45, 100);
+        driver.info.flags &= !FLAG_MMIO_VERIFIED;
+        let mmio = Command::Write(RegisterId::MmioPackageLimit, driver.mmio, target);
+        assert!(run(mmio, &mut driver, &audit, unknown).is_err());
+        driver.info.flags |= FLAG_READ_ONLY;
+        let msr = Command::Write(RegisterId::PackageLimit, driver.msr, target);
+        assert!(run(msr, &mut driver, &audit, unknown).is_err());
+        driver.info.flags = FLAG_MMIO_READABLE | FLAG_MMIO_VERIFIED;
+        assert!(run(msr, &mut driver, &audit, unknown).is_err());
+        assert_eq!(driver.writes, 0);
+        assert!(rows(&audit).is_empty());
+        cleanup(&audit);
+    }
+
+    #[test]
+    fn refuses_when_the_register_changed_since_the_callers_read() {
+        let audit = audit_env("stale");
+        let mut driver = FakeDriver::new();
+        let planned = driver.msr;
+        let target = driver.target(45, 100);
+        driver.msr = driver.target(40, 90);
+        let command = Command::Write(RegisterId::PackageLimit, planned, target);
+        let error = run(command, &mut driver, &audit, unknown).unwrap_err();
+        assert!(error.contains("instead of the expected"), "{error}");
+        assert_eq!(driver.writes, 0);
+        let rows = rows(&audit);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].outcome.as_deref(), Some("refused"));
+        assert_eq!(rows[0].pl1_before_w, Some(40.0));
+        cleanup(&audit);
+    }
+
+    #[test]
+    fn concurrent_change_is_reported_and_audited() {
+        let audit = audit_env("race");
+        let mut driver = FakeDriver::new();
+        driver.race = true;
+        let target = driver.target(45, 100);
+        let command = Command::Write(RegisterId::PackageLimit, driver.msr, target);
+        let error = run(command, &mut driver, &audit, unknown).unwrap_err();
+        assert!(error.contains("re-run plan"), "{error}");
+        let outcomes: Vec<_> = rows(&audit)
+            .iter()
+            .map(|r| r.outcome.clone().unwrap())
+            .collect();
+        assert_eq!(outcomes, ["pending", "driver_error"]);
+        cleanup(&audit);
+    }
+
+    #[test]
+    fn reads_audit_settings_strictly() {
+        let env = |pairs: &'static [(&'static str, &'static str)]| {
+            move |key: &str| {
+                pairs
+                    .iter()
+                    .find(|(k, _)| *k == key)
+                    .map(|(_, v)| OsString::from(*v))
+            }
+        };
+        assert!(AuditEnv::from_env(env(&[("RAPL_AUDIT_PHASE", "bogus")])).is_err());
+        let parsed = AuditEnv::from_env(env(&[
+            ("RAPL_AUDIT_LOG", ""),
+            ("RAPL_AUDIT_REASON", "line\nbreak"),
+            ("RAPL_AUDIT_PHASE", "rollback"),
+        ]))
+        .unwrap();
+        assert_eq!(parsed.log, None);
+        assert_eq!(parsed.reason.as_deref(), Some("line break"));
+        assert_eq!(parsed.phase, Some(AuditPhase::Rollback));
     }
 }

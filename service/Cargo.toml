@@ -1,12 +1,13 @@
 [package]
 name = "rapl-watchdog"
-version = "0.1.0"
+version = "0.3.0"
 edition = "2021"
+description = "Opt-in Windows service that re-applies audited RAPL package limits within a correction budget"
+license = "MIT"
 publish = false
 
 [dependencies]
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
-serde_json = "1"
 win-mmio-msr-cli = { path = ".." }
 
 [target.'cfg(windows)'.dependencies]
