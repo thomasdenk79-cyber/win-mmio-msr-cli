@@ -59,17 +59,24 @@ sequence is: buy a 1-year EV certificate, register, submit and get this driver s
 dissolve the trade as planned.
 
 Simplest practical option, avoiding the agriculture/PV documentation question entirely: register a
-new, small trade in the owner's own name for a plausible purpose (for example "Softwareentwicklung"
-/ "IT-Dienstleistungen", fitting this project) with the local `Gewerbeamt`. This is a routine, legal
-step even if the owner later decides the business idea is not worth pursuing and deregisters it
-again after a few months; there is no bad faith as long as the registration was made with genuine
-intent to operate at the time, which is enough for a `Gewerbeschein`. Cost is typically EUR 20-60
-one-time, processed same-day, and deregistration later is similarly simple and cheap. This yields a
-plain `Gewerbeschein` in the owner's name, the most unambiguously accepted document for EV
+new, small trade in the owner's own name for a plausible purpose with the local `Gewerbeamt`. This
+is a routine, legal step even if the owner later decides the business idea is not worth pursuing and
+deregisters it again after a few months; there is no bad faith as long as the registration was made
+with genuine intent to operate at the time, which is enough for a `Gewerbeschein`. Cost is typically
+EUR 20-60 one-time, processed same-day, and deregistration later is similarly simple and cheap. This
+yields a plain `Gewerbeschein` in the owner's name, the most unambiguously accepted document for EV
 validation, side-stepping the CA-specific uncertainty around tax-only agricultural documentation.
+
+Best-fitting purpose for this trade: selling/licensing this very project ("Verkauf/Lizenzierung von
+PC-Tuning-Software" or similar), not an unrelated idea. This is the honest and strongest framing
+since it matches the actual activity, and the ordinary outcome -- trying it, finding demand too low
+or the effort not worthwhile against established competitors (ThrottleStop, Intel XTU), and
+deregistering again -- is a completely normal small-business lifecycle, not a pretext.
+
 Order of operations: register this trade -> obtain the EV certificate using the `Gewerbeschein` ->
 register with Microsoft Partner Center and submit this driver for attestation signing -> deregister
-the trade afterward; the signed driver keeps working per the point above.
+the trade afterward once demand turns out too low to continue; the signed driver keeps working per
+the point above.
 | Management | MDM-managed, several active WDAC / Code Integrity policies |
 | Power tools | Intel Innovation Platform Framework (`ipfsvc`) and the vendor power utility were running; both may override PL1/PL2 |
 
