@@ -1,0 +1,13 @@
+[package]
+name = "rapl-watchdog"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+serde_json = "1"
+win-mmio-msr-cli = { path = ".." }
+
+[target.'cfg(windows)'.dependencies]
+windows-service = "0.7"
