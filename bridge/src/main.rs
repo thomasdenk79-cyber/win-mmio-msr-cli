@@ -107,7 +107,7 @@ fn main() {
             if info.version != VERSION || info.size < std::mem::size_of::<Info>() as u32 {
                 fail("driver returned an invalid info structure")
             }
-            println!("protocol=1\nvendor={}\nmodel=Intel(R) Core(TM) i9-13950HX\nmmio_59a0_64bit_verified={}", if info.vendor==0x8086 {"GenuineIntel"} else {"unknown"}, (info.flags&1)!=0);
+            println!("protocol=1\nvendor={}\nmodel={}\nmmio_59a0_64bit_verified={}", if info.vendor==0x8086 {"GenuineIntel"} else {"unknown"}, processor_name(), (info.flags&1)!=0);
         }
         "msr-read" | "mmio-read" => {
             let address = args.next().unwrap_or_else(|| fail("missing register"));

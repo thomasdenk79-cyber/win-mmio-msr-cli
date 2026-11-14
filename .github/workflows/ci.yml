@@ -8,22 +8,32 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: Test
+      - name: Test CLI
         run: cargo test --all-targets
-      - name: Release build
+      - name: Lint CLI
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Release build CLI
         run: cargo build --release
-      - name: Bridge tests
+      - name: Test bridge
         run: cargo test --manifest-path bridge/Cargo.toml
-      - name: Bridge Windows build
-        run: cargo build --manifest-path bridge/Cargo.toml --release --target x86_64-pc-windows-msvc
-      - name: Bridge tests
-        run: cargo test --manifest-path bridge/Cargo.toml
+      - name: Test service configuration
+        run: cargo test --manifest-path service/Cargo.toml
   windows:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: Test
+        with:
+          targets: x86_64-pc-windows-msvc
+      - name: Test CLI
         run: cargo test --all-targets
-      - name: Release build
+      - name: Release build CLI
         run: cargo build --release
+      - name: Test bridge
+        run: cargo test --manifest-path bridge/Cargo.toml
+      - name: Release build bridge
+        run: cargo build --manifest-path bridge/Cargo.toml --release --target x86_64-pc-windows-msvc
+      - name: Test service
+        run: cargo test --manifest-path service/Cargo.toml
+      - name: Release build service
+        run: cargo build --manifest-path service/Cargo.toml --release --target x86_64-pc-windows-msvc
