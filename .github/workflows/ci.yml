@@ -12,7 +12,7 @@ jobs:
   rust-linux:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
@@ -27,7 +27,7 @@ jobs:
   rust-windows:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-msvc
@@ -42,7 +42,7 @@ jobs:
         shell: powershell
         run: ./.github/scripts/service-smoke.ps1 -BinaryDir target/x86_64-pc-windows-msvc/release
       - name: Upload user-mode binaries
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: user-mode-x64
           if-no-files-found: error
@@ -53,8 +53,11 @@ jobs:
   driver-windows:
     runs-on: windows-2022
     steps:
-      - uses: actions/checkout@v4
-      - uses: microsoft/setup-msbuild@v2
+      - uses: actions/checkout@v7
+      # 64-bit MSBuild: the WDK 26100 build tasks load only x64 InfVerif and ApiValidator.
+      - uses: microsoft/setup-msbuild@v3
+        with:
+          msbuild-architecture: x64
       - name: Build driver package (default gates, read-only)
         run: msbuild driver/rapl-pkg.vcxproj -m -nologo -warnaserror -p:Configuration=Release -p:Platform=x64
       - name: Compile check with every gate enabled (not shipped)
@@ -73,7 +76,7 @@ jobs:
         shell: powershell
         run: ./.github/scripts/driver-package-check.ps1 -OutputDir target/driver/x64/Release
       - name: Upload unsigned driver package
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: driver-package-x64-unsigned
           if-no-files-found: error

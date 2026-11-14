@@ -437,7 +437,7 @@ static NTSTATUS RaplCreateControlDevice(_In_ WDFDRIVER Driver)
     DECLARE_CONST_UNICODE_STRING(deviceName, RAPL_NT_DEVICE_NAME);
     DECLARE_CONST_UNICODE_STRING(linkName, RAPL_DOS_DEVICE_NAME);
     PWDFDEVICE_INIT init;
-    WDFDEVICE device;
+    WDFDEVICE device = NULL;
     WDF_IO_QUEUE_CONFIG queueConfig;
     WDF_OBJECT_ATTRIBUTES queueAttributes;
     NTSTATUS status;
