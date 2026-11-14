@@ -38,6 +38,9 @@ jobs:
         run: cargo test --workspace --all-targets --locked
       - name: MSVC release build (CLI, bridge, service)
         run: cargo build --workspace --release --locked --target x86_64-pc-windows-msvc
+      - name: CLI smoke test (simulation, watt columns, refusals)
+        shell: powershell
+        run: ./scripts/smoke.ps1 -BinaryDir target/x86_64-pc-windows-msvc/release
       - name: Service smoke test (real SCM, installer, no driver)
         shell: powershell
         run: ./.github/scripts/service-smoke.ps1 -BinaryDir target/x86_64-pc-windows-msvc/release
@@ -50,6 +53,16 @@ jobs:
             target/x86_64-pc-windows-msvc/release/win-mmio-msr-cli.exe
             target/x86_64-pc-windows-msvc/release/rapl-bridge.exe
             target/x86_64-pc-windows-msvc/release/rapl-watchdog.exe
+  powershell-lint:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install PSScriptAnalyzer
+        shell: powershell
+        run: Install-Module PSScriptAnalyzer -RequiredVersion 1.25.0 -Scope CurrentUser -Force
+      - name: Parse and analyze all scripts (Windows PowerShell 5.1)
+        shell: powershell
+        run: ./.github/scripts/powershell-lint.ps1
   driver-windows:
     runs-on: windows-2022
     steps:
@@ -66,22 +79,26 @@ jobs:
           -p:Configuration=Release -p:Platform=x64
           -p:RaplEnableMmioRead=1 -p:RaplMmioLayoutValidated=1 -p:RaplEnableLiveWrites=1
           -p:OutDir=${{ runner.temp }}\gates\out\ -p:IntDir=${{ runner.temp }}\gates\obj\
-      - name: Code analysis with every gate enabled
-        run: >-
-          msbuild driver/rapl-pkg.vcxproj -m -nologo -warnaserror
-          -p:Configuration=Release -p:Platform=x64 -p:RunCodeAnalysis=true
-          -p:RaplEnableMmioRead=1 -p:RaplMmioLayoutValidated=1 -p:RaplEnableLiveWrites=1
-          -p:OutDir=${{ runner.temp }}\analysis\out\ -p:IntDir=${{ runner.temp }}\analysis\obj\
+      - name: Code analysis (Driver Recommended Rules, every gate enabled)
+        run: |
+          $output = msbuild driver/rapl-pkg.vcxproj -m -nologo -warnaserror `
+            -p:Configuration=Release -p:Platform=x64 -p:RunCodeAnalysis=true `
+            -p:RaplEnableMmioRead=1 -p:RaplMmioLayoutValidated=1 -p:RaplEnableLiveWrites=1 `
+            "-p:OutDir=${{ runner.temp }}\analysis\out\" "-p:IntDir=${{ runner.temp }}\analysis\obj\"
+          $code = $LASTEXITCODE
+          $output
+          if ($code -ne 0) { exit $code }
+          if (-not ($output -match '/analyze:ruleset\s*"?[^"\r\n]*DriverRecommendedRules\.ruleset')) {
+            throw 'Code analysis did not run with DriverRecommendedRules.ruleset'
+          }
       - name: Check driver package (InfVerif, DriverVer, image)
         shell: powershell
-        run: ./.github/scripts/driver-package-check.ps1 -OutputDir target/driver/x64/Release
+        run: ./.github/scripts/driver-package-check.ps1 -PackageDir target/driver/x64/Release/rapl-pkg
       - name: Upload unsigned driver package
         uses: actions/upload-artifact@v7
         with:
           name: driver-package-x64-unsigned
           if-no-files-found: error
           path: |
-            target/driver/x64/Release/**/rapl-pkg.sys
-            target/driver/x64/Release/**/rapl-pkg.inf
-            target/driver/x64/Release/**/rapl-pkg.cat
-            target/driver/x64/Release/**/rapl-pkg.pdb
+            target/driver/x64/Release/rapl-pkg/
+            target/driver/x64/Release/rapl-pkg.pdb

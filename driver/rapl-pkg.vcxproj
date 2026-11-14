@@ -2,7 +2,7 @@
 <!--
   KMDF build of rapl-pkg.sys. Requires Visual Studio 2022 with the WDK extension:
     msbuild driver\rapl-pkg.vcxproj -p:Configuration=Release -p:Platform=x64
-  Output (driver package with INF and unsigned catalog): target\driver\x64\Release\
+  Output: target\driver\x64\Release\rapl-pkg\ (rapl-pkg.sys, stamped INF, unsigned catalog).
   Build-time gates (README.md): -p:RaplEnableMmioRead=1, -p:RaplMmioLayoutValidated=1,
   -p:RaplEnableLiveWrites=1. All default to 0 (read-only MSR access).
 -->
@@ -45,6 +45,8 @@
     <OutDir>$(MSBuildThisFileDirectory)..\target\driver\$(Platform)\$(Configuration)\</OutDir>
     <IntDir>$(MSBuildThisFileDirectory)..\target\driver\obj\$(Platform)\$(Configuration)\</IntDir>
     <SignMode>Off</SignMode>
+    <!-- Stricter than the WDK default (DriverMinimumRules) whenever code analysis runs. -->
+    <CodeAnalysisRuleSet>$(WDKContentRoot)CodeAnalysis\DriverRecommendedRules.ruleset</CodeAnalysisRuleSet>
   </PropertyGroup>
   <ItemDefinitionGroup>
     <ClCompile>

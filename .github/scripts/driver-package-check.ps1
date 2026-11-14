@@ -3,25 +3,22 @@
 .SYNOPSIS
     Checks the driver package built by driver/rapl-pkg.vcxproj (CI job driver-windows).
 .DESCRIPTION
-    Finds the package folder, runs InfVerif in Windows Driver mode, checks the stamped
+    Runs InfVerif in Windows Driver mode on the package folder, checks the stamped
     DriverVer and the x64 image, and prints SHA-256 hashes as build evidence.
 #>
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory)][string]$OutputDir,
+    [Parameter(Mandatory)][string]$PackageDir,
     [string]$ExpectedVersion = '0.3.0.0'
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$inf = Get-ChildItem -LiteralPath $OutputDir -Recurse -Filter 'rapl-pkg.inf' |
-    Where-Object { Test-Path -LiteralPath (Join-Path $_.DirectoryName 'rapl-pkg.cat') } |
-    Select-Object -First 1
-if (-not $inf) {
-    Get-ChildItem -LiteralPath $OutputDir -Recurse | ForEach-Object { $_.FullName }
-    throw "No package folder with rapl-pkg.inf and rapl-pkg.cat below $OutputDir"
+if (-not (Test-Path -LiteralPath $PackageDir -PathType Container)) {
+    throw "Package folder not found: $PackageDir"
 }
-$package = $inf.DirectoryName
+$package = (Resolve-Path -LiteralPath $PackageDir).ProviderPath
+$inf = Get-Item -LiteralPath (Join-Path $package 'rapl-pkg.inf')
 Write-Output "Package folder: $package"
 foreach ($name in 'rapl-pkg.sys', 'rapl-pkg.inf', 'rapl-pkg.cat') {
     $file = Join-Path $package $name

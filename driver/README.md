@@ -40,14 +40,23 @@ Requirements: Visual Studio 2022 with the C++ workload and the MSVC Spectre-miti
 libraries, the Windows SDK and the WDK 10.0.26100 with its Visual Studio extension.
 
 ```powershell
+.\scripts\build.ps1 -Driver
+# or directly with the 64-bit MSBuild (MSBuild\Current\Bin\amd64\MSBuild.exe):
 msbuild driver\rapl-pkg.vcxproj -p:Configuration=Release -p:Platform=x64
 # gates, for example: -p:RaplEnableLiveWrites=1
 ```
 
-The package (`rapl-pkg.sys`, `rapl-pkg.inf`, unsigned `rapl-pkg.cat`) is written below
-`target\driver\x64\Release\`. The CI job `driver-windows` builds the default package with
-warnings as errors, compiles once with every gate enabled (never shipped), runs InfVerif and
-uploads the artifact `driver-package-x64-unsigned`.
+Use the 64-bit MSBuild: the WDK 26100 build tasks load InfVerif and ApiValidator for the MSBuild
+process architecture and ship no x86 `InfVerif.dll`, so the 32-bit MSBuild fails INF verification.
+`scripts\build.ps1 -Driver` finds the 64-bit MSBuild with `vswhere`.
+
+The package (`rapl-pkg.sys`, the stamped `rapl-pkg.inf` and the unsigned `rapl-pkg.cat`) is
+written to `target\driver\x64\Release\rapl-pkg\`; the PDB stays in `target\driver\x64\Release\`.
+The CI job `driver-windows` builds the default package with warnings as errors (including
+ApiValidator), compiles once with every gate enabled (never shipped), runs code analysis with the
+Driver Recommended Rules on that build, checks the package with
+`.github/scripts/driver-package-check.ps1` (InfVerif, `DriverVer`, x64 image, signature status)
+and uploads the artifact `driver-package-x64-unsigned`.
 
 ## Signing
 
@@ -89,6 +98,6 @@ The INF is a primitive driver package (`DefaultInstall`, no hardware ID). The se
 
 ## Validation status
 
-CI proves that the driver compiles with warnings as errors, that the INF passes InfVerif and
-that the ABI matches the bridge. It does not prove behaviour on hardware. Loading the driver
-requires a signed build and a completed validation report.
+CI proves that the driver compiles with warnings as errors, passes code analysis and ApiValidator,
+that the INF passes InfVerif and that the ABI matches the bridge. It does not prove behaviour on
+hardware. Loading the driver requires a signed build and a completed validation report.
