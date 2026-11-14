@@ -1,12 +1,17 @@
 #![cfg_attr(not(windows), allow(dead_code, unused_imports))]
-use chrono::{SecondsFormat, Utc};
+use chrono::Utc;
 use std::{
-    fs::OpenOptions,
-    io::Write,
     path::{Path, PathBuf},
     time::Duration,
 };
-use win_mmio_msr_cli::{apply, backend::ExternalBridge, build_plan, rapl::power_fields_equal};
+use win_mmio_msr_cli::{
+    apply,
+    audit::{AuditRecord, RegisterChange, REGISTER_MSR_PKG_LIMIT},
+    backend::{ExternalBridge, HardwareBackend},
+    build_plan, validate_limits, Plan, Snapshot,
+};
+
+const SOURCE: &str = "rapl-watchdog";
 
 #[derive(Debug, Clone)]
 struct Config {
@@ -60,9 +65,8 @@ fn parse_config(args: impl IntoIterator<Item = String>) -> Result<Config, String
             other => return Err(format!("unknown service argument: {other}")),
         }
     }
-    if !(5..=157).contains(&pl1) || pl2 < pl1 || pl2 > 157 {
-        return Err("require 5 <= PL1 <= PL2 <= 157".into());
-    }
+    // The watchdog never runs PL1 above the processor base power (security rule 8).
+    validate_limits(pl1, pl2, false)?;
     if interval < 1000 {
         return Err("interval must be at least 1000 ms".into());
     }
@@ -76,27 +80,43 @@ fn parse_config(args: impl IntoIterator<Item = String>) -> Result<Config, String
     })
 }
 
-fn event(log: &PathBuf, kind: &str, fields: serde_json::Value) -> Result<(), String> {
-    if let Some(parent) = log.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+fn event(log: &Path, record: AuditRecord) -> Result<(), String> {
+    record
+        .append_to(log)
+        .map_err(|e| format!("audit log write failed for {}: {e}", log.display()))
+}
+
+/// One record per register with PL1/PL2 before and set watts.
+fn register_events(
+    log: &Path,
+    kind: &str,
+    plan: &Plan,
+    after: Option<&Snapshot>,
+    backup: &Path,
+) -> Result<(), String> {
+    let units = plan.before().units;
+    for change in plan.changes() {
+        let readback = after.and_then(|snapshot| {
+            if change.register == REGISTER_MSR_PKG_LIMIT {
+                Some(snapshot.msr)
+            } else {
+                snapshot.mmio
+            }
+        });
+        event(
+            log,
+            AuditRecord::new(SOURCE, kind)
+                .register_change(&RegisterChange {
+                    register: change.register,
+                    units,
+                    previous: change.before,
+                    requested: change.after,
+                    readback,
+                })
+                .field("backup", backup.display().to_string()),
+        )?;
     }
-    let mut object = serde_json::Map::new();
-    object.insert(
-        "timestamp_utc".into(),
-        serde_json::json!(Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)),
-    );
-    object.insert("event".into(), serde_json::json!(kind));
-    object.insert("source".into(), serde_json::json!("rapl-watchdog"));
-    if let serde_json::Value::Object(map) = fields {
-        object.extend(map);
-    }
-    let mut f = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(log)
-        .map_err(|e| e.to_string())?;
-    writeln!(f, "{}", serde_json::Value::Object(object)).map_err(|e| e.to_string())?;
-    f.sync_all().map_err(|e| e.to_string())
+    Ok(())
 }
 
 fn backup_name(dir: &Path) -> PathBuf {
@@ -110,25 +130,30 @@ fn tick(config: &Config) -> Result<bool, String> {
     let bridge = ExternalBridge::with_timeout(config.bridge.clone(), Duration::from_secs(10))?
         .with_audit_log(Some(config.audit_log.clone()))
         .with_audit_reason(Some("watchdog_correction".into()));
-    let mut backend: Box<dyn win_mmio_msr_cli::backend::HardwareBackend> = Box::new(bridge);
+    let mut backend: Box<dyn HardwareBackend> = Box::new(bridge);
     let plan = build_plan(backend.as_mut(), config.pl1, config.pl2, false)?;
-    if power_fields_equal(plan.before().msr, plan.targets().0)
-        && power_fields_equal(plan.before().mmio, plan.targets().1)
-    {
+    if plan.already_applied() {
         return Ok(false);
+    }
+    if !plan.blockers().is_empty() {
+        return Err(format!("Apply blocked: {}", plan.blockers().join("; ")));
     }
     std::fs::create_dir_all(&config.backup_dir).map_err(|e| e.to_string())?;
     let backup = backup_name(&config.backup_dir);
-    event(
+    register_events(
         &config.audit_log,
         "correction_detected",
-        serde_json::json!({"pl1_watts":config.pl1,"pl2_watts":config.pl2,"backup":backup,"msr_before":format!("0x{:016x}",plan.before().msr),"mmio_before":format!("0x{:016x}",plan.before().mmio)}),
+        &plan,
+        None,
+        &backup,
     )?;
-    apply(backend.as_mut(), &plan, &backup)?;
-    event(
+    let after = apply(backend.as_mut(), &plan, &backup)?;
+    register_events(
         &config.audit_log,
         "correction_verified",
-        serde_json::json!({"backup":backup,"pl1_watts":config.pl1,"pl2_watts":config.pl2}),
+        &plan,
+        Some(&after),
+        &backup,
     )?;
     Ok(true)
 }
@@ -184,8 +209,10 @@ fn service_main(arguments: Vec<std::ffi::OsString>) {
         .expect("set service state");
     let _ = event(
         &config.audit_log,
-        "service_started",
-        serde_json::json!({"pl1_watts":config.pl1,"pl2_watts":config.pl2,"interval_ms":config.interval.as_millis()}),
+        AuditRecord::new(SOURCE, "service_started")
+            .field("pl1_watts", config.pl1)
+            .field("pl2_watts", config.pl2)
+            .field("interval_ms", config.interval.as_millis() as u64),
     );
     loop {
         if stop_rx.recv_timeout(config.interval).is_ok() {
@@ -194,12 +221,14 @@ fn service_main(arguments: Vec<std::ffi::OsString>) {
         if let Err(error) = tick(&config) {
             let _ = event(
                 &config.audit_log,
-                "service_error",
-                serde_json::json!({"error":error}),
+                AuditRecord::new(SOURCE, "service_error").field("error", error),
             );
         }
     }
-    let _ = event(&config.audit_log, "service_stopped", serde_json::json!({}));
+    let _ = event(
+        &config.audit_log,
+        AuditRecord::new(SOURCE, "service_stopped"),
+    );
     let _ = handler.set_service_status(ServiceStatus {
         service_type: ServiceType::OWN_PROCESS,
         current_state: ServiceState::Stopped,
