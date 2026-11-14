@@ -42,7 +42,12 @@ validation report (copy of [VALIDATION_REPORT_TEMPLATE.md](VALIDATION_REPORT_TEM
 
 ## Release
 
-- [ ] R1 Microsoft attestation signing via the owner's registered solar-PV trade
+- [ ] R0 Ask Siemens IT/endpoint security (owner of the device's WDAC/Code Integrity policy) for an
+      internal signing certificate or a WDAC allow rule for this driver, citing the Lenovo PL1/PL2
+      firmware bug; see EVALUATION.md "Preferred signing route" section. Preferred over R1 since the
+      device is Siemens-owned and already MDM-managed; needs no external EV certificate.
+- [ ] R1 Fallback if R0 is not available: Microsoft attestation signing via the owner's registered
+      solar-PV trade
       (`Gewerbeanmeldung`); see EVALUATION.md "Attestation signing" section. Steps: confirm the
       trade registration document and exact legal name, order an EV code signing certificate in
       that name, create a free Microsoft Entra ID tenant (owner as global admin), register for the

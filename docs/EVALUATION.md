@@ -7,6 +7,10 @@ items are in [TODO.md](TODO.md); the full report structure is in
 
 ## Target device (recorded 2026-11-14, before a planned reinstall)
 
+The device is a Siemens-owned, MDM-managed corporate machine (not the owner's personal property),
+affected by a Lenovo firmware bug that sets PL1/PL2 wrong and never releases them -- this is the
+underlying problem this project works around.
+
 | Item | Value |
 |---|---|
 | Device | Lenovo machine type 21FB (ThinkPad P16 Gen 2 class) |
@@ -18,6 +22,32 @@ items are in [TODO.md](TODO.md); the full report structure is in
 | Test signing | off before the evaluation |
 | VBS / HVCI | running / on (security services 1, 2, 7) |
 | Vulnerable driver blocklist | enabled |
+
+## Preferred signing route: internal Siemens IT, not an external EV certificate
+
+Since the device is Siemens-owned and MDM-managed with active WDAC/Code Integrity policies (see
+table above), the organization that already controls trust on this machine is Siemens IT, not an
+external CA or Microsoft. Two options avoid the entire external EV-certificate/attestation-signing
+path below:
+
+1. **WDAC allow rule.** Siemens' endpoint security/Code Integrity team can add an explicit allow
+   entry for this driver (by file hash or by an internal signing certificate) to the existing WDAC
+   policy enforced on the device. This needs no Microsoft registration and no EV certificate at
+   all, since the policy owner defines trust directly.
+2. **Internal signing certificate.** If Siemens operates its own internal PKI for internal tools and
+   drivers (common at large organizations), already trusted on managed devices, signing with that
+   certificate is sufficient and fully independent of the public EV-certificate route.
+
+Business justification for the internal request: the Lenovo firmware bug sets PL1/PL2 incorrectly
+and never releases them (see device note above); this project is a documented, audited, fail-closed
+fix with a fixed register whitelist (see ARCHITECTURE.md), not general-purpose MSR/MMIO access.
+This stays an internal request to Siemens IT/endpoint security for this specific managed device; it
+does not need Siemens to appear as a public Microsoft Partner Center publisher or to be associated
+with the public GitHub project.
+
+Next step: the owner asks Siemens IT/endpoint security (whichever team manages the device's WDAC/
+Code Integrity policy) for either option above, citing the firmware bug and this project's narrow,
+audited design.
 
 ## Attestation signing: a registered business changes the signing route
 
